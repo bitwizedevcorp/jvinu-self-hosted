@@ -79,6 +79,10 @@ export function memoryDriver(
         nextToken: from + PAGE < entries.length ? String(from + PAGE) : undefined,
       };
     },
+    async findFile(key) {
+      const bytes = key.endsWith("/") ? undefined : files.get(key);
+      return bytes ? { key, size: bytes.length, lastModified: modified, etag: null, storageClass: null } : null;
+    },
     async listKeys(prefix, max) {
       counters.lists++;
       const keys = [...files.keys()].filter((key) => key.startsWith(prefix)).sort();

@@ -4,6 +4,7 @@ import { getConnection } from "@/app/lib/server/connections";
 import { tablesTouched } from "@/app/lib/server/data/lake";
 import { exportSql, type ExportFormat } from "@/app/lib/server/data/sql";
 import { driverFor } from "@/app/lib/server/drivers";
+import { isTaken } from "@/app/lib/server/drivers/types";
 import { guardConnection } from "@/app/lib/server/guard";
 import { fail, handle, readJson, tooLarge } from "@/app/lib/server/http";
 
@@ -43,8 +44,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/connections
       if (blocked) return fail(blocked, 507);
     }
     const targetDriver = driverFor(target);
-    const { keys } = await targetDriver.listKeys(key, 1);
-    if (keys.includes(key)) return fail(`Something named “${name}” is already there.`, 409);
+    if (await isTaken(targetDriver, key)) return fail(`Something named “${name}” is already there.`, 409);
     if (body.acknowledgeTables !== true) {
       const tables = await tablesTouched(targetDriver, target.id, "upload", [], key.slice(0, key.lastIndexOf("/") + 1));
       if (tables.length) return Response.json({ error: tables[0].message, code: "lake-table", tables }, { status: 409 });

@@ -312,17 +312,27 @@ export function dropboxDriver(target: Target): StorageDriver {
 
     // Files, plus each empty folder as its own "marker" — a non-empty folder is implied
     // by what's in it, exactly as on S3.
+    findFile: (key) =>
+      run(async () => {
+        if (!key || key.endsWith("/")) return null;
+        try {
+          const meta = await rpc<Entry>("files/get_metadata", { path: pathOf(key) });
+          if (meta[".tag"] !== "file") return null;
+          return {
+            key,
+            size: meta.size ?? 0,
+            lastModified: meta.server_modified ? new Date(meta.server_modified).toISOString() : null,
+            etag: meta.content_hash ?? null,
+            storageClass: null,
+          };
+        } catch (error) {
+          if (isNotFound(error)) return null;
+          throw error;
+        }
+      }),
+
     listKeys: (prefix, max) =>
       run(async () => {
-        if (prefix && !prefix.endsWith("/")) {
-          try {
-            const meta = await rpc<Entry>("files/get_metadata", { path: pathOf(prefix) });
-            return { keys: meta[".tag"] === "file" ? [prefix] : [], truncated: false };
-          } catch (error) {
-            if (isNotFound(error)) return { keys: [], truncated: false };
-            throw error;
-          }
-        }
         const files: string[] = [];
         const folders = new Set<string>(prefix ? [prefix] : []);
         const parents = new Set<string>();
@@ -374,28 +384,6 @@ export function dropboxDriver(target: Target): StorageDriver {
 
     inventory: (prefix, maxPages = 100) =>
       run(async () => {
-        // One exact name (SQL's FROM 'sales.csv') is that file; otherwise it's a folder.
-        if (prefix && !prefix.endsWith("/")) {
-          try {
-            const meta = await rpc<Entry>("files/get_metadata", { path: pathOf(prefix) });
-            if (meta[".tag"] === "file")
-              return {
-                files: [
-                  {
-                    key: prefix,
-                    size: meta.size ?? 0,
-                    lastModified: meta.server_modified ? new Date(meta.server_modified).toISOString() : null,
-                    etag: meta.content_hash ?? null,
-                    storageClass: null,
-                  },
-                ],
-                truncated: false,
-              };
-          } catch (error) {
-            if (!isNotFound(error)) throw error;
-          }
-          prefix = `${prefix}/`;
-        }
         const files: Listing["files"] = [];
         let truncated = false;
         try {

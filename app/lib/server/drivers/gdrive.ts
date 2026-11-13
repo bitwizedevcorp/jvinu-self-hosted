@@ -624,9 +624,15 @@ export function googleDriveDriver(target: Target): StorageDriver {
 
     // Files, plus each empty folder as its own "marker" — a non-empty folder is implied
     // by what's in it, exactly as on S3.
+    findFile: (key) =>
+      run(async () => {
+        if (!key || key.endsWith("/")) return null;
+        const found = await fileAt(key);
+        return found ? fileOf(key, found.node, found.exported) : null;
+      }),
+
     listKeys: (prefix, max) =>
       run(async () => {
-        if (prefix && !prefix.endsWith("/")) return { keys: (await fileAt(prefix)) ? [prefix] : [], truncated: false };
         if (!(await folderId(partsOf(prefix)))) return { keys: [], truncated: false };
         const files: string[] = [];
         const folders = new Set<string>(prefix ? [prefix] : []);
@@ -669,11 +675,6 @@ export function googleDriveDriver(target: Target): StorageDriver {
 
     inventory: (prefix, maxPages = 100) =>
       run(async () => {
-        // An exact file name (SQL's FROM 'sales.csv') is that file; otherwise it's a folder.
-        if (prefix && !prefix.endsWith("/")) {
-          const found = await fileAt(prefix);
-          if (found) return { files: [fileOf(prefix, found.node, found.exported)], truncated: false };
-        }
         const files: Listing["files"] = [];
         const truncated = await walk(
           prefix,

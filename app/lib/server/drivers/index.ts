@@ -40,9 +40,18 @@ export function driverFor(connection: DriverTarget): StorageDriver {
   }
   const driver = cloudDriver(connection);
   const scope = connection.id ?? `${connection.credentials.kind}\n${connection.bucket}\n${connection.endpoint ?? ""}`;
-  const usable = bindPageTokens(connection.crypt ? cryptDriver(driver, dataKeyOf(connection.crypt.key)) : driver, scope);
-  // A saved connection's writes forget what this server remembered about its files.
-  return guardKeys(connection.id ? trackWrites(usable, connection.id) : usable);
+  return atSeam(connection.crypt ? cryptDriver(driver, dataKeyOf(connection.crypt.key)) : driver, { scope, connectionId: connection.id });
+}
+
+/**
+ * What every caller's driver goes through, whatever the provider: keys without "." or ".."
+ * segments, folders always named with their "/", page tokens bound to their listing, and —
+ * for a saved connection — writes reported as connection changes. `scope` names the
+ * connection for page tokens.
+ */
+export function atSeam(driver: StorageDriver, { scope, connectionId }: { scope: string; connectionId?: string }): StorageDriver {
+  const bound = bindPageTokens(driver, scope);
+  return guardKeys(connectionId ? trackWrites(bound, connectionId) : bound);
 }
 
 const TOKEN_PURPOSE = "page-token";
@@ -95,6 +104,7 @@ function checkKey(key: unknown) {
 
 /** Which arguments of each method are keys or prefixes (a key list for `remove`). */
 const KEY_ARGUMENTS: Partial<Record<keyof StorageDriver, number[]>> = {
+  findFile: [0],
   list: [0],
   listKeys: [0],
   stats: [0],
@@ -109,6 +119,10 @@ const KEY_ARGUMENTS: Partial<Record<keyof StorageDriver, number[]>> = {
   setMetadata: [0],
   rename: [0, 1],
 };
+
+/** Methods that take a folder: "a" means the folder "a/" (see the contract in types.ts). */
+const FOLDER_ARGUMENT = new Set<keyof StorageDriver>(["list", "listKeys", "stats", "inventory"]);
+const asFolder = (prefix: unknown) => (typeof prefix === "string" && prefix && !prefix.endsWith("/") ? `${prefix}/` : prefix);
 
 function guardKeys(driver: StorageDriver): StorageDriver {
   return new Proxy(driver, {
@@ -129,6 +143,7 @@ function guardKeys(driver: StorageDriver): StorageDriver {
         } catch (error) {
           return Promise.reject(error);
         }
+        if (FOLDER_ARGUMENT.has(property as keyof StorageDriver)) args[0] = asFolder(args[0]);
         return value.apply(target, args);
       };
     },

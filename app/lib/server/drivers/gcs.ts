@@ -2,7 +2,7 @@ import "server-only";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { Storage, type File } from "@google-cloud/storage";
-import { eachLimit, egressRefused, networkCode, StorageUserError, unreachable, unsatisfiable, type FolderStats, type Listing, type StorageDriver } from "./types";
+import { eachLimit, egressRefused, networkCode, StorageUserError, unreachable, unsatisfiable, type FolderStats, type Listing, type StorageDriver, fileFromHead } from "./types";
 
 type Target = {
   bucket: string;
@@ -152,6 +152,11 @@ export function gcsDriver(target: Target): StorageDriver {
         : Promise.resolve(null),
 
     // Google encrypts every object at rest; a KMS key or a customer key shows in its metadata.
+    // The file at exactly this key: what its head says, or nothing on a 404.
+    findFile(key) {
+      return fileFromHead(key, () => this.head!(key));
+    },
+
     head: (key) =>
       run(async () => {
         const [metadata] = await bucket.file(key).getMetadata();

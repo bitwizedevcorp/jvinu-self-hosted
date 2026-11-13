@@ -27,6 +27,30 @@ export type Listing = {
   nextToken?: string;
 };
 
+/** One file, as a listing shows it. */
+export type ListedFile = Listing["files"][number];
+
+/**
+ * `findFile` for a driver that has `head`: the head's facts, or null when the provider says
+ * there's nothing there (404).
+ */
+export async function fileFromHead(key: string, head: () => Promise<ObjectHead>): Promise<ListedFile | null> {
+  if (!key || key.endsWith("/")) return null;
+  try {
+    const found = await head();
+    return { key, size: found.size ?? 0, lastModified: found.lastModified ?? null, etag: found.etag ?? null, storageClass: found.storageClass ?? null };
+  } catch (error) {
+    if (error instanceof StorageUserError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+/** Is something already at this key: the file, or for a folder key, anything below it? */
+export async function isTaken(driver: StorageDriver, key: string): Promise<boolean> {
+  if (key.endsWith("/")) return (await driver.listKeys(key, 1)).keys.length > 0;
+  return (await driver.findFile(key)) !== null;
+}
+
 export type FolderStats = {
   objects: number;
   bytes: number;
@@ -145,12 +169,9 @@ export interface BucketAudit {
  * - **Folder markers.** `write("a/", empty)` makes an empty folder. A marker is never listed
  *   as a file, never counted, and never inventoried; `listKeys` returns an empty folder's own
  *   key, since that's what must be deleted or copied to keep it.
- * - **A folder, or one exact name.** `listKeys` and `inventory` take either a folder key (or
- *   "") — everything below it — or a file key without the "/", for which the result holds that
- *   key exactly when the file exists. Stores that match by string prefix (S3) may return other
- *   keys that start the same way ("a.txt.bak"), so callers look for the key they asked for and
- *   never count on what else comes back. A folder named without its "/" ("a") still reaches
- *   what's inside it. `list` and `stats` take a folder key or "" only.
+ * - **Folders, and one file.** `list`, `listKeys`, `stats` and `inventory` take a folder key
+ *   (or "") and cover what's below it; driverFor turns a folder named without its "/" ("a")
+ *   into "a/" before any driver sees it. "Is there a file at exactly this key?" is `findFile`.
  * - **Pages.** `nextToken` is opaque: pass it back to `list` with the same prefix, nothing
  *   else. driverFor binds each token to its connection and prefix and refuses any other.
  * - **Sizes.** `size` is the bytes `read` will return. When the service can't know them until
@@ -162,14 +183,16 @@ export interface BucketAudit {
 export interface StorageDriver {
   /** Proves the credentials can list the bucket; returns its region if the service says. 404 if it isn't there. */
   verify(): Promise<{ region?: string }>;
+  /** The file at exactly this key, as a listing would show it — or null when there's none (or the key is a folder key). */
+  findFile(key: string): Promise<ListedFile | null>;
   /** One page (≤ 1,000 entries) of one folder level: files and the folders below. A folder that's gone reads as empty. */
   list(prefix: string, token?: string): Promise<Listing>;
-  /** Every key below a folder (or one exact name, see above), flat, up to `max`: files and empty folders' own keys. */
+  /** Every key below a folder, flat, up to `max`: files and empty folders' own keys. */
   listKeys(prefix: string, max: number): Promise<{ keys: string[]; truncated: boolean }>;
   /** Files and bytes below a folder, reading up to `maxPages` pages of about 1,000. */
   stats(prefix: string, maxPages?: number): Promise<FolderStats>;
   /**
-   * Every file below a folder (or one exact name, see above), flat, with size, class and date —
+   * Every file below a folder, flat, with size, class and date —
    * up to `maxPages` pages of about 1,000. For analytics, SQL, zips; `truncated` when the cap was hit.
    */
   inventory(prefix: string, maxPages?: number): Promise<{ files: Listing["files"]; truncated: boolean }>;

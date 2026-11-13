@@ -133,17 +133,14 @@ describe("Google Drive driver", () => {
     await expect(driver("/Work").list("", "https://graph.example/elsewhere")).rejects.toMatchObject({ status: 400 });
   });
 
-  it("finds an exact file name for SQL, and says when a size isn't known", async () => {
+  it("finds an exact file for SQL, and says when a size isn't known", async () => {
     const work = driver("/Work");
-    const exact = await work.inventory("notes.txt", 1);
-    expect(exact.files.map((file) => [file.key, file.size])).toEqual([["notes.txt", "hello drive".length]]);
-    expect((await driver("/").inventory("Work/Sub/deep.csv", 1)).files.map((file) => file.key)).toEqual(["Work/Sub/deep.csv"]);
+    expect(await work.findFile("notes.txt")).toMatchObject({ key: "notes.txt", size: "hello drive".length });
+    expect(await driver("/").findFile("Work/Sub/deep.csv")).toMatchObject({ key: "Work/Sub/deep.csv" });
     // A Google document has no size until it's exported: flagged, not passed off as empty.
-    const doc = (await work.inventory("Plan.pdf", 1)).files[0];
-    expect(doc).toMatchObject({ key: "Plan.pdf", size: 0, sizeUnknown: true });
-    // A folder named without its "/" is still that folder.
-    expect((await work.inventory("Sub", 1)).files.map((file) => file.key)).toEqual(["Sub/deep.csv"]);
-    expect((await work.inventory("missing.csv", 1)).files).toEqual([]);
+    expect(await work.findFile("Plan.pdf")).toMatchObject({ key: "Plan.pdf", size: 0, sizeUnknown: true });
+    expect(await work.findFile("Sub")).toBeNull();
+    expect(await work.findFile("missing.csv")).toBeNull();
   });
 
   it("walks folders for listKeys and stats", async () => {

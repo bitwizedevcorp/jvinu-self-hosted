@@ -24,6 +24,10 @@ function memoryBucket() {
   const missing = () => new StorageUserError("That object no longer exists.", 404);
   const driver: StorageDriver = {
     verify: async () => ({}),
+    findFile: async (key) => {
+      const object = objects.get(key);
+      return object ? { key, size: object.data.length, lastModified: null, etag: object.etag, storageClass: null } : null;
+    },
     list: async () => ({ folders: [], files: [] }),
     listKeys: async () => ({ keys: [...objects.keys()], truncated: false }),
     stats: async () => ({ objects: objects.size, bytes: 0, lastModified: null, truncated: false }),

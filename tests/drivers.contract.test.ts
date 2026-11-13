@@ -438,25 +438,19 @@ describe.each(HARNESSES.map((harness, index) => ({ harness, up: status[index] })
       expect(capped.files.length).toBeGreaterThan(0);
     });
 
-    it("finds one exact name, apart from names that start the same way", async () => {
+    it("finds one file at exactly its key, and nothing else", async () => {
       await driver.write("exact/sales.csv", text("a,b\n1"), "text/csv");
       await driver.write("exact/sales.csv.bak", text("old"), "text/plain");
       await driver.write("exact/sales/inner.csv", text("x"), "text/csv");
 
-      // SQL's FROM 'exact/sales.csv': the file itself, with its size. Others starting the
-      // same way may come back on string-prefix stores; nothing below a folder of that name.
-      const one = await driver.inventory("exact/sales.csv", 1);
-      expect(one.files.find((file) => file.key === "exact/sales.csv")?.size).toBe(5);
-      expect(one.files.every((file) => file.key.startsWith("exact/sales.csv"))).toBe(true);
-      expect(one.files.some((file) => file.sizeUnknown)).toBe(false);
-      expect((await driver.inventory("exact/missing.csv", 1)).files.map((file) => file.key)).not.toContain("exact/missing.csv");
-
-      // "Is that name taken?", as operations and transfers ask before writing.
-      expect((await driver.listKeys("exact/sales.csv", 5)).keys).toContain("exact/sales.csv");
-      expect((await driver.listKeys("exact/missing.csv", 5)).keys).not.toContain("exact/missing.csv");
-
-      // A folder named without its "/" still reaches what's inside.
-      expect((await driver.inventory("exact/sales", 1)).files.map((file) => file.key)).toContain("exact/sales/inner.csv");
+      // SQL's FROM 'exact/sales.csv', and "is that name taken?" before a write.
+      const found = await driver.findFile("exact/sales.csv");
+      expect(found).toMatchObject({ key: "exact/sales.csv", size: 5 });
+      expect(found?.sizeUnknown).toBeFalsy();
+      expect(await driver.findFile("exact/missing.csv")).toBeNull();
+      // A folder's name, with or without its "/", isn't a file.
+      expect(await driver.findFile("exact/sales")).toBeNull();
+      expect(await driver.findFile("exact/sales/")).toBeNull();
 
       await driver.remove(["exact/sales.csv", "exact/sales.csv.bak", "exact/sales/inner.csv"]);
     });
