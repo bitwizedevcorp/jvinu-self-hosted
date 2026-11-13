@@ -1,0 +1,22 @@
+# HTTPS in front of jvinu (docker compose --profile proxy). Caddy gets and renews the
+# certificate for JVINU_DOMAIN by itself; ports 80 and 443 must reach this machine and the
+# domain's DNS must point here.
+{$JVINU_DOMAIN} {
+	# Caddy sets X-Forwarded-For to the address it saw, replacing anything the client sent,
+	# so jvinu (with JVINU_TRUST_PROXY=1) can rate-limit per real sender.
+	reverse_proxy jvinu:3000 {
+		# Large uploads stream straight through; no buffering, no time limit on the body.
+		flush_interval -1
+		transport http {
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+
+	encode zstd gzip
+	header -Server
+	log {
+		output stdout
+		format console
+	}
+}

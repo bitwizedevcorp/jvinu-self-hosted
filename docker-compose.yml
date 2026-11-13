@@ -1,0 +1,124 @@
+# jvinu with its SQLite database on a named volume.
+#
+#   cp .env.example .env    # then set JVINU_SECRET; the first sign-in chooses the password
+#   docker compose up -d
+#
+# HTTPS with an automatic certificate, for a server on the internet (see docs/https.md):
+#   JVINU_DOMAIN=files.example.com, JVINU_BIND=127.0.0.1 and JVINU_TRUST_PROXY=1 in .env, then
+#   docker compose --profile proxy up -d
+#
+# Your own storage on this machine, connected in jvinu as "My storage" automatically:
+#   docker compose --profile storage up -d        # see docs/run-your-own-storage.md
+#
+# Optional local storage to try it against (no cloud account needed):
+#   docker compose --profile floci up -d   # S3, Azure, GCS and OCI emulators
+#   docker compose --profile minio up -d   # MinIO (S3)
+# From inside jvinu, reach them by service name, e.g. http://floci:4566 or http://minio:9000.
+
+services:
+  jvinu:
+    build: .
+    image: jvinu:latest
+    restart: unless-stopped
+    ports:
+      # Behind the proxy, set JVINU_BIND=127.0.0.1 so only Caddy can reach jvinu directly.
+      - "${JVINU_BIND:-0.0.0.0}:${JVINU_PORT:-3000}:3000"
+    env_file: ${JVINU_ENV_FILE:-.env}
+    environment:
+      JVINU_DATA_DIR: /data
+      # Bundled storage. Inert without the storage profile: the token file never exists.
+      JVINU_STORAGE_ADMIN_URL: http://garage:3903
+      JVINU_STORAGE_S3_URL: http://garage:3900
+      JVINU_STORAGE_ADMIN_TOKEN_FILE: /run/garage/admin_token
+    volumes:
+      - jvinu-data:/data
+      - garage-secrets:/run/garage:ro
+
+  # --- HTTPS in front of jvinu (profile: proxy) ----------------------------------------
+  caddy:
+    image: caddy:2.10.2-alpine
+    profiles: [proxy]
+    restart: unless-stopped
+    depends_on: [jvinu]
+    environment:
+      # The name this server is reached at (its DNS must point here); localhost until it's set.
+      JVINU_DOMAIN: ${JVINU_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  # --- Bundled storage (profile: storage) -------------------------------------------
+  garage-init:
+    image: busybox:1.38.0
+    profiles: [storage]
+    command: ["sh", "/init-secrets.sh"]
+    volumes:
+      - ./storage/init-secrets.sh:/init-secrets.sh:ro
+      - garage-secrets:/run/garage
+
+  garage:
+    image: dxflrs/garage:v2.4.1
+    profiles: [storage]
+    restart: unless-stopped
+    depends_on:
+      garage-init:
+        condition: service_completed_successfully
+    # No ports: S3 (3900) and admin (3903) are reachable only on this compose network.
+    # To let other apps on your network use S3, add the storage-s3 profile (below).
+    volumes:
+      - ./storage/garage.toml:/etc/garage.toml:ro
+      - garage-secrets:/run/garage:ro
+      - ${JVINU_STORAGE_META_PATH:-garage-meta}:/var/lib/garage/meta
+      - ${JVINU_STORAGE_PATH:-garage-data}:/var/lib/garage/data
+
+  # Opt-in: publish the S3 API, e.g. COMPOSE_PROFILES=storage,storage-s3 in .env.
+  garage-s3:
+    image: alpine/socat:1.8.1.3
+    profiles: [storage-s3]
+    restart: unless-stopped
+    depends_on: [garage]
+    command: ["TCP-LISTEN:3900,fork,reuseaddr", "TCP:garage:3900"]
+    ports:
+      - "${JVINU_STORAGE_S3_BIND:-0.0.0.0}:${JVINU_STORAGE_S3_PORT:-3900}:3900"
+
+  floci:
+    image: floci/floci:latest
+    profiles: [floci]
+    ports: ["4566:4566"]
+  floci-az:
+    image: floci/floci-az:latest
+    profiles: [floci]
+    ports: ["4577:4577"]
+  floci-gcp:
+    image: floci/floci-gcp:latest
+    profiles: [floci]
+    ports: ["4588:4588"]
+  floci-oci:
+    image: floci/floci-oci:latest
+    profiles: [floci]
+    ports: ["4599:4599"]
+
+  minio:
+    image: minio/minio:latest
+    profiles: [minio]
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports: ["9000:9000", "9001:9001"]
+    volumes:
+      - minio-data:/data
+
+volumes:
+  jvinu-data:
+  caddy-data:
+  caddy-config:
+  minio-data:
+  garage-secrets:
+  garage-meta:
+  garage-data:

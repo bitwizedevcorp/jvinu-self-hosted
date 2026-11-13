@@ -1,0 +1,24 @@
+# Garage for `docker compose --profile storage`: one node, one disk, no redundancy.
+# Secrets are generated on first start by the garage-init service (see init-secrets.sh).
+
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+# SQLite: small memory footprint and robust on old hardware; snapshots guard the metadata.
+db_engine = "sqlite"
+metadata_auto_snapshot_interval = "6h"
+
+# A single node holds the only copy. Back up the volumes.
+replication_factor = 1
+
+rpc_bind_addr = "0.0.0.0:3901"
+rpc_public_addr = "127.0.0.1:3901"
+rpc_secret_file = "/run/garage/rpc_secret"
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "0.0.0.0:3900"
+root_domain = ".s3.garage.localhost"
+
+[admin]
+api_bind_addr = "0.0.0.0:3903"
+admin_token_file = "/run/garage/admin_token"
