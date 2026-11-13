@@ -452,11 +452,11 @@ export const api = {
 };
 
 export function bucketIdFor(connection: RemoteConnection): string {
-  // A folder root (Dropbox, OneDrive, Google Drive) is a path that may hold ":" or "|", which node IDs use as separators.
+  // A folder-root provider's place is a path that may hold ":" or "|", which node IDs use as separators.
   return `${connection.id}/${isFolderRoot(connection.presetId) ? connection.presetId : connection.bucket}`;
 }
 
-/** Folder roots are paths: show the service's name for the whole account, else the folder's. */
+/** A folder-root provider's place is a path: show the service's name for the whole account, else the folder's. */
 function bucketNames(connection: RemoteConnection): { name: string; title: string } {
   if (!isFolderRoot(connection.presetId)) return { name: connection.bucket, title: connection.bucket };
   const whole = PROVIDERS[connection.presetId].service;

@@ -1,5 +1,5 @@
 import { actorOf, recordActivity, settingsChanges } from "@/app/lib/server/activity";
-import { removeConnection } from "@/app/lib/server/connection-changes";
+import { removeConnection } from "@/app/lib/server/remove-connection";
 import {
   clearOtherShareTargets,
   getConnection,

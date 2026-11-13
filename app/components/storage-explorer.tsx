@@ -124,7 +124,7 @@ function whereIs(connection: { endpoint?: string; region: string; presetId: stri
 function targetOf(connection: { endpoint?: string; region: string; presetId: string }): string {
   if (connection.endpoint) return new URL(connection.endpoint).host;
   if (connection.region) return connection.region;
-  return profileOf(connection.presetId)?.service ?? "cloud";
+  return profileOf(connection.presetId)?.service ?? "the provider";
 }
 
 /** ?bucket=<connection>/<bucket>&prefix=a/b/  or  ?view=starred */
@@ -973,7 +973,7 @@ export function StorageExplorer({ user }: { user: SignedInUser }) {
   /**
    * Starts the operation as a background job. Quick problems (a name clash, moving a folder
    * into itself) throw with the server's message, so the open dialog can show it; the rest
-   * is followed in the tasks tray. One that touches a data-lake table asks first.
+   * is followed in the jobs tray. One that touches a data-lake table asks first.
    */
   function runOperation(request: OperationRequest, verb: string) {
     const targetBucket = bucket;

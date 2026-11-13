@@ -136,7 +136,7 @@ export async function planZip(input: {
 }
 
 /**
- * The archive for a plan: its bytes, each file read from the cloud only when its turn comes,
+ * The archive for a plan: its bytes, each file read from the provider only when its turn comes,
  * and its exact length — known when nothing is compressed, nothing might be left out (files
  * in an archive class that may not be restored), and every size is known (a Google
  * document's isn't until it's exported). Without a promised length, files gone since the

@@ -11,11 +11,11 @@
 export const PROVIDER_KINDS = ["s3", "azure", "gcs", "oci", "dropbox", "onedrive", "gdrive"] as const;
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
 
-/** Clouds that speak S3 with an endpoint of their own; their specs are in server/s3-compatible.ts. */
+/** Providers that speak S3 with an endpoint of their own; their specs are in server/s3-compatible.ts. */
 export const S3_COMPATIBLE_IDS = ["r2", "wasabi", "b2", "spaces", "scaleway", "storj", "minio"] as const;
 export type S3CompatibleId = (typeof S3_COMPATIBLE_IDS)[number];
 
-/** What a connection was made from: a kind, an S3-compatible cloud, or the server's own storage. */
+/** What a connection was made from: a kind, an S3-compatible provider, or the server's own storage. */
 export type PresetId = ProviderKind | S3CompatibleId | "garage";
 
 /**

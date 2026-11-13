@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { contentsChanged, onContentsChanged, trackWrites } from "@/app/lib/server/connection-changes";
+import { connectionChanged, onConnectionChange, trackWrites } from "@/app/lib/server/connection-changes";
 import { memoryDriver } from "./memory-driver";
 
 /** Every write through driverFor forgets what this server remembered about the connection. */
 describe("connection changes", () => {
   const heard: string[] = [];
-  onContentsChanged((id) => heard.push(id));
+  onConnectionChange((id) => heard.push(id));
 
   it("reports every kind of write, and no read", async () => {
     const driver = trackWrites(memoryDriver({ "a.txt": "x" }), "c1");
@@ -30,11 +30,11 @@ describe("connection changes", () => {
   });
 
   it("keeps going when one cache can't forget", () => {
-    onContentsChanged(() => {
+    onConnectionChange(() => {
       throw new Error("broken cache");
     });
     heard.length = 0;
-    expect(() => contentsChanged("c3")).not.toThrow();
+    expect(() => connectionChanged("c3")).not.toThrow();
     expect(heard).toEqual(["c3"]);
   });
 });

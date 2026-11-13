@@ -7,6 +7,20 @@ import { startDownload, type Delivery } from "./share-serve";
 import type { ShareLink } from "./shares";
 
 export type Redemption = { refused: Refusal } | { link: ShareLink; delivery: Delivery };
+export type Viewing = { refused: Refusal } | { link: ShareLink; protected: boolean };
+
+/**
+ * What opening a share link's page may show, without counting a download (link previews in
+ * chat apps open pages too): the page-view limits, then whether the link still works, and
+ * whether it asks for a password. The steps before the password, in the same order as below.
+ */
+export async function viewLink(token: string, headers: Headers): Promise<Viewing> {
+  const busy = overLimit("page", token, headers);
+  if (busy) return { refused: busy };
+  const opened = await openLink(token);
+  if ("code" in opened) return { refused: opened };
+  return { link: opened.link, protected: Boolean(opened.passwordHash) };
+}
 
 /**
  * Turns a share link into one download, or says why not — every check in its order:

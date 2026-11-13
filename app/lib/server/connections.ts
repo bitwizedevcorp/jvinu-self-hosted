@@ -1,5 +1,5 @@
 import "server-only";
-import { signsLinks } from "./drivers";
+import { signsLinks } from "./drivers/links";
 import { randomUUID } from "node:crypto";
 import { openWith, sealWith } from "./crypto";
 import { db } from "./db";
@@ -15,22 +15,8 @@ function parseSettings(raw: string | null | undefined): ConnectionSettings {
   }
 }
 
-/**
- * Where bundled storage is reachable from outside (a tunnel, a reverse proxy), if anywhere.
- * Only then can it hand out links; otherwise its files are served through this app.
- */
-export function storagePublicUrl(): string | null {
-  const raw = process.env.JVINU_STORAGE_PUBLIC_URL?.trim();
-  if (!raw) return null;
-  try {
-    const url = new URL(raw);
-    return url.protocol === "https:" || url.protocol === "http:" ? url.origin + url.pathname.replace(/\/+$/, "") : null;
-  } catch {
-    return null;
-  }
-}
 
-/** What the user picked (a kind, or an S3-compatible cloud on the S3 driver): see app/lib/providers.ts. */
+/** What the user picked (a kind, or an S3-compatible provider on the S3 driver): see app/lib/providers.ts. */
 export type { PresetId, ProviderKind } from "../providers";
 import type { PresetId } from "../providers";
 

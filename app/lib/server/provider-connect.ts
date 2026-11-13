@@ -51,7 +51,7 @@ function buildS3Compatible(id: S3CompatibleId, body: Record<string, unknown>): B
   return { credentials: { kind: "s3", accessKeyId, secretAccessKey }, region: located.region, endpoint: located.endpoint };
 }
 
-/** Turn the form for one cloud into credentials, or say exactly what's wrong. */
+/** Turn the form for one provider into credentials, or say exactly what's wrong. */
 function buildCredentials(kind: ProviderKind, body: Record<string, unknown>, endpoint: string | undefined): Built {
   switch (kind) {
     case "s3": {
@@ -160,7 +160,7 @@ function buildCredentials(kind: ProviderKind, body: Record<string, unknown>, end
   }
 }
 
-/** How each folder-root provider writes its root path: "/" or "/Folder/Sub", or null if it can't be one. */
+/** How each folder-root provider writes its place: "/" or "/Folder/Sub", or null if it can't be one. */
 const FOLDER_ROOTS: Record<"dropbox" | "onedrive" | "gdrive", (raw: string) => string | null> = {
   dropbox: dropboxFolder,
   onedrive: oneDriveFolder,
@@ -169,7 +169,7 @@ const FOLDER_ROOTS: Record<"dropbox" | "onedrive" | "gdrive", (raw: string) => s
 
 export type PreparedConnection = {
   presetId: ProviderKind | S3CompatibleId;
-  /** Bucket; container on Azure; root folder ("/", "/Photos") on folder-root providers. */
+  /** The place: a bucket; a container on Azure; a folder ("/", "/Photos") on folder-root providers. */
   bucket: string;
   region: string;
   endpoint?: string;
@@ -196,7 +196,7 @@ export function prepareConnection(body: Record<string, unknown>): PreparedConnec
     return { error: `That isn't a valid ${profile.place} name.` };
   if (endpoint === null) return { error: "The endpoint must be an http(s) URL such as http://localhost:4566, and not a cloud metadata address." };
 
-  // S3-compatible clouds ignore any endpoint the client sends; theirs is derived (MinIO's is
+  // S3-compatible providers ignore any endpoint the client sends; theirs is derived (MinIO's is
   // the one typed, checked the same way as a custom S3 endpoint).
   const built = isS3Compatible(kind) ? buildS3Compatible(kind, body) : buildCredentials(kind, body, endpoint);
   if ("error" in built) return built;

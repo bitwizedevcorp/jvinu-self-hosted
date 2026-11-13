@@ -1,6 +1,6 @@
 import "server-only";
 import { writeFile } from "node:fs/promises";
-import { onContentsChanged } from "../connection-changes";
+import { onConnectionChange } from "../connection-changes";
 import { StorageUserError, type StorageDriver } from "../drivers/types";
 import { readPrefix } from "./bytes";
 import { duckProblem, literal, withDuck, type Duck } from "./duck";
@@ -36,7 +36,7 @@ export function forgetTables(scope: string) {
   for (const key of cache.keys()) if (key.startsWith(`${scope}|`)) cache.delete(key);
 }
 // The scope is the connection id: any write through driverFor forgets that connection's tables.
-onContentsChanged(forgetTables);
+onConnectionChange(forgetTables);
 
 async function hasIcebergMetadata(driver: StorageDriver, metadata: string): Promise<boolean> {
   let token: string | undefined;

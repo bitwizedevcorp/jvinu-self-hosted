@@ -60,4 +60,16 @@ describe("redeeming a share link", () => {
     expect(await redeemLink(token, null, visitor())).toMatchObject({ refused: { code: "gone" } });
     expect(await redeemLink("x".repeat(32), null, visitor())).toMatchObject({ refused: { code: "missing" } });
   });
+
+  it("lets the page be viewed without using up a download, and says when it needs a password", async () => {
+    const { redeemLink, viewLink } = await import("../app/lib/server/share-redeem");
+    const { token } = await newLink({ maxDownloads: 1 });
+    for (let i = 0; i < 3; i++) expect(await viewLink(token, visitor())).toMatchObject({ protected: false });
+    expect(await redeemLink(token, null, visitor())).toHaveProperty("delivery");
+    expect(await viewLink(token, visitor())).toMatchObject({ refused: { code: "used-up" } });
+
+    const locked = await newLink({ password: "secret words" });
+    expect(await viewLink(locked.token, visitor())).toMatchObject({ protected: true });
+    expect(await viewLink("y".repeat(32), visitor())).toMatchObject({ refused: { code: "missing" } });
+  });
 });

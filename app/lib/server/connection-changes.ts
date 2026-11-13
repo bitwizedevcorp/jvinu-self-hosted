@@ -1,32 +1,29 @@
 import "server-only";
 import type { StorageDriver } from "./drivers/types";
-import { forgetConnectionActivity } from "./activity";
-import { deleteConnection } from "./connections";
-import { forgetConnectionNotes } from "./notes";
-import { forgetConnectionLinks } from "./shares";
-import { forgetConnectionItems } from "./user-items";
 
 /**
- * What happens when a connection's contents change, or the connection goes away — in one
- * place, so no caller has to remember it.
+ * Connection changes: anything that alters what a connection holds — in one place, so no
+ * caller has to remember what to forget.
  *
  * - Every write through `driverFor` reports itself: the driver it returns is tracked here,
  *   so an upload, copy, move, delete or metadata change from any route, job or share copy
  *   forgets what this server remembered about that connection's files.
  * - Whatever keeps such memory (the file scans behind search and analytics, found tables,
- *   X-Ray reports) registers with `onContentsChanged` where it's defined.
- * - `removeConnection` is the one way to disconnect: the row, and everything kept about it.
+ *   X-Ray reports) registers with `onConnectionChange` where it's defined.
+ * - Disconnecting reports one too (remove-connection.ts).
+ *
+ * Imports nothing at runtime, so drivers and caches can all use it.
  */
 type Listener = (connectionId: string) => void;
 const listeners = new Set<Listener>();
 
-/** Called with a connection's id whenever its contents change through this server. */
-export function onContentsChanged(listener: Listener): void {
+/** Called with a connection's id whenever it changes through this server. */
+export function onConnectionChange(listener: Listener): void {
   listeners.add(listener);
 }
 
 /** Forgets everything remembered about a connection's files. */
-export function contentsChanged(connectionId: string): void {
+export function connectionChanged(connectionId: string): void {
   for (const listener of listeners) {
     try {
       listener(connectionId);
@@ -51,23 +48,8 @@ export function trackWrites(driver: StorageDriver, connectionId: string): Storag
       if (!WRITES.has(property as keyof StorageDriver)) return value.bind(target);
       return (...args: unknown[]) => {
         const result = (value as (...a: unknown[]) => Promise<unknown>).apply(target, args);
-        return Promise.resolve(result).finally(() => contentsChanged(connectionId));
+        return Promise.resolve(result).finally(() => connectionChanged(connectionId));
       };
     },
   });
-}
-
-/**
- * Disconnects: deletes the connection and everything this server keeps about it — starred
- * and recent items, notes, share links, its history, and remembered scans. False if it
- * wasn't there.
- */
-export async function removeConnection(id: string): Promise<boolean> {
-  const removed = await deleteConnection(id);
-  await forgetConnectionItems(id);
-  await forgetConnectionNotes(id);
-  await forgetConnectionLinks(id);
-  await forgetConnectionActivity(id);
-  contentsChanged(id);
-  return removed;
 }

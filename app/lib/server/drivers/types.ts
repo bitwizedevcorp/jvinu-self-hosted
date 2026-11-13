@@ -136,7 +136,7 @@ export interface BucketAudit {
 }
 
 /**
- * Everything the app does to a bucket, regardless of whose cloud it is.
+ * Everything the app does to a connection's place, whichever provider holds it.
  *
  * The contract every driver keeps (tests/drivers.contract.test.ts holds each one to it):
  *
@@ -179,11 +179,11 @@ export interface StorageDriver {
   read(key: string, range?: ByteRange): Promise<ObjectBody>;
   /** Small, in-memory writes; a folder key with empty bytes makes an empty folder. Overwrites. */
   write(key: string, body: Uint8Array, contentType?: string): Promise<void>;
-  /** Streams a file of any size — multipart / block / resumable as the cloud prefers. Overwrites. */
+  /** Streams a file of any size — multipart / block / resumable as the provider prefers. Overwrites. */
   upload(key: string, body: ReadableStream<Uint8Array>, size: number | undefined, contentType?: string): Promise<void>;
   /** Deletes keys; returns the ones that couldn't be deleted. A key that's already gone isn't a failure. */
   remove(keys: string[]): Promise<{ failed: string[] }>;
-  /** Server-side where the cloud supports it. 404 if the source is missing. */
+  /** Server-side where the provider supports it. 404 if the source is missing. */
   copy(source: string, destination: string): Promise<void>;
   /** One object's metadata, including how it's encrypted at rest. */
   head?(key: string): Promise<ObjectHead>;
@@ -198,7 +198,7 @@ export interface StorageDriver {
    * key ("a/") and act on the whole tree in one call, so callers needn't expand it object by object.
    */
   nativeFolders?: boolean;
-  /** Bucket-level checks for Storage X-Ray; absent where the cloud has no API for them. */
+  /** Bucket-level checks for Storage X-Ray; absent where the provider has no API for them. */
   audit?: BucketAudit;
   /**
    * Set when the bucket holds only ciphertext (jvinu encryption): whatever this server

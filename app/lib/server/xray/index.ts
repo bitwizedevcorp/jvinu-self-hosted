@@ -3,7 +3,7 @@ import { findPreset } from "../../storage";
 import type { XrayReport } from "../../xray";
 import type { StoredConnection } from "../connections";
 import { cloudDriver, driverFor } from "../drivers";
-import { onContentsChanged } from "../connection-changes";
+import { onConnectionChange } from "../connection-changes";
 import { inventoryOf } from "../inventory";
 import { xrayScan } from "./scan";
 
@@ -45,4 +45,4 @@ export function xrayFor(connection: StoredConnection, refresh = false): Promise<
 export function forgetXray(connectionId: string) {
   cache.delete(connectionId);
 }
-onContentsChanged(forgetXray);
+onConnectionChange(forgetXray);

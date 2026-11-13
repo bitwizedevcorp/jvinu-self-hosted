@@ -1,5 +1,6 @@
 import "server-only";
-import { saveCredentials, storagePublicUrl, type StoredConnection } from "../connections";
+import { saveCredentials, type StoredConnection } from "../connections";
+import { storagePublicUrl } from "./links";
 import { azureDriver } from "./azure";
 import { dropboxDriver } from "./dropbox";
 import { gcsDriver } from "./gcs";
@@ -155,18 +156,6 @@ function s3Metadata(presetId: StoredConnection["presetId"] | undefined, endpoint
   }
 }
 
-/**
- * Whether this connection's driver gives out signed links (its `signedUrl` returns one), so
- * the page can offer them. Kept beside the drivers it describes: change one, change this.
- * Encrypted files can only be read through this app, so no provider link would open them.
- */
-export function signsLinks(connection: DriverTarget): boolean {
-  const c = connection.credentials;
-  if (connection.crypt) return false;
-  if (connection.presetId === "garage") return Boolean(storagePublicUrl());
-  // s3.ts signs always; azure.ts not against an emulator; gcs.ts only with a key; the rest never.
-  return c.kind === "s3" || (c.kind === "azure" && !connection.endpoint) || (c.kind === "gcs" && Boolean(c.privateKey));
-}
 
 /** The cloud's own driver, without jvinu encryption: what's stored, as it's stored. */
 export function cloudDriver(connection: DriverTarget): StorageDriver {

@@ -19,15 +19,15 @@ const running = (job: Job) => job.status === "running";
  */
 export function useJobs(onFinish: (job: Job, meta: JobMeta | undefined) => void) {
   const [jobs, setJobs] = useState<Job[]>([]);
-  const notes = useRef(new Map<string, JobMeta>());
+  const metaById = useRef(new Map<string, JobMeta>());
 
   const finish = useEffectEvent((job: Job) => {
-    const meta = notes.current.get(job.id);
-    notes.current.delete(job.id);
+    const meta = metaById.current.get(job.id);
+    metaById.current.delete(job.id);
     onFinish(job, meta);
   });
 
-  // Tasks still running from before a reload carry on in the tray.
+  // Jobs still running from before a reload carry on in the tray.
   useEffect(() => {
     api
       .jobs()
@@ -54,7 +54,7 @@ export function useJobs(onFinish: (job: Job, meta: JobMeta | undefined) => void)
   }, [runningIds]);
 
   function follow(job: Job, meta?: JobMeta) {
-    if (meta) notes.current.set(job.id, meta);
+    if (meta) metaById.current.set(job.id, meta);
     setJobs((current) => (current.some((item) => item.id === job.id) ? current : [job, ...current]));
   }
 
@@ -82,7 +82,7 @@ export function jobOutcome(job: Job, verb = "Processed"): string {
   if (job.status === "done")
     return job.failed.length ? `${verb} ${count} — ${job.failed.length} couldn't be ${verb.toLowerCase()}` : `${verb} ${count}`;
   if (job.status === "cancelled") return `Cancelled after ${count}`;
-  return job.error ?? "That task didn't finish";
+  return job.error ?? "That job didn't finish";
 }
 
 /**

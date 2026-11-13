@@ -1,5 +1,5 @@
 import "server-only";
-import { removeConnection } from "./connection-changes";
+import { removeConnection } from "./remove-connection";
 import type { DiskStatus } from "./bundled-storage";
 import {
   insertConnection,
