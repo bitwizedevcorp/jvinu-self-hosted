@@ -1,5 +1,5 @@
 import "server-only";
-import { createHash } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 import { auth as googleAuth, drive as driveApi, type drive_v3 } from "googleapis/build/src/apis/drive";
 import { mimeOf } from "../mime";
 import {
@@ -263,7 +263,7 @@ export function googleDriveDriver(target: Target): StorageDriver {
         const status = statusOf(error);
         const busy = status === 429 || (status !== undefined && status >= 500) || /rateLimitExceeded/i.test(reasonOf(error));
         if (!busy || attempt >= 4) throw error;
-        await sleep(Math.min(500 * 2 ** attempt, 8000) + Math.random() * 250);
+        await sleep(Math.min(500 * 2 ** attempt, 8000) + randomInt(250));
       }
     }
   }
@@ -300,7 +300,7 @@ export function googleDriveDriver(target: Target): StorageDriver {
       const busy = response.status === 429 || response.status >= 500 || /rateLimitExceeded/i.test(reason);
       // A request body that's a stream can't be sent twice; only bodiless and buffered ones are retried.
       if (busy && attempt < 4 && !(init.body instanceof ReadableStream)) {
-        await sleep(Math.min(500 * 2 ** attempt, 8000) + Math.random() * 250);
+        await sleep(Math.min(500 * 2 ** attempt, 8000) + randomInt(250));
         continue;
       }
       throw Object.assign(new Error(`Google Drive answered ${response.status}`), { status: response.status, errors: [{ reason }] });
