@@ -74,6 +74,9 @@ export function resolveDriversWith(resolver: Resolver | null) {
   resolveDriver = resolver ?? fromDatabase;
 }
 
+/** A connection's driver, as share links reach it: null when the connection is gone. */
+export const shareDriverFor = (connectionId: string): Promise<StorageDriver | null> => resolveDriver(connectionId);
+
 /** The connection marked "share from here", if any. */
 export async function shareBucket(): Promise<StoredConnection | undefined> {
   return (await listConnections()).find((connection) => connection.settings?.shareTarget);

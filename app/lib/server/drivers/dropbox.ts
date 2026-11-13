@@ -374,6 +374,28 @@ export function dropboxDriver(target: Target): StorageDriver {
 
     inventory: (prefix, maxPages = 100) =>
       run(async () => {
+        // One exact name (SQL's FROM 'sales.csv') is that file; otherwise it's a folder.
+        if (prefix && !prefix.endsWith("/")) {
+          try {
+            const meta = await rpc<Entry>("files/get_metadata", { path: pathOf(prefix) });
+            if (meta[".tag"] === "file")
+              return {
+                files: [
+                  {
+                    key: prefix,
+                    size: meta.size ?? 0,
+                    lastModified: meta.server_modified ? new Date(meta.server_modified).toISOString() : null,
+                    etag: meta.content_hash ?? null,
+                    storageClass: null,
+                  },
+                ],
+                truncated: false,
+              };
+          } catch (error) {
+            if (!isNotFound(error)) throw error;
+          }
+          prefix = `${prefix}/`;
+        }
         const files: Listing["files"] = [];
         let truncated = false;
         try {

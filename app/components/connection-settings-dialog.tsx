@@ -5,6 +5,7 @@ import { atRestEncryption } from "../lib/connection-settings";
 import { api, type RemoteConnection } from "../lib/remote";
 import { findPreset } from "../lib/storage";
 import { CloseIcon, KeyIcon, LinkIcon, LockIcon, SettingsIcon, ShareIcon } from "./icons";
+import { PROVIDERS } from "../lib/providers";
 
 /**
  * A connection's options that aren't credentials: encryption at rest, the share bucket and
@@ -32,7 +33,7 @@ export function ConnectionSettingsDialog({
   const otherBucket = connections.find((item) => item.id !== connection.id && item.settings.shareTarget);
   const [sharePrefix, setSharePrefix] = useState(shareTarget?.prefix ?? "jvinu-shares/");
   const [publicBase, setPublicBase] = useState(connection.settings.publicBaseUrl ?? "");
-  const place = connection.presetId === "azure" ? "container" : connection.presetId === "dropbox" || connection.presetId === "onedrive" || connection.presetId === "gdrive" ? "folder" : "bucket";
+  const place = PROVIDERS[connection.presetId].place;
 
   useEffect(() => {
     ref.current?.showModal();

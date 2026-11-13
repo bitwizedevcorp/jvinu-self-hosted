@@ -1,149 +1,32 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { driveFolder, driveListedName, driveQuote, googleDriveDriver } from "@/app/lib/server/drivers/gdrive";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  driveAccessOf,
+  driveFolder,
+  driveListedName,
+  driveQuote,
+  exchangeDriveCode,
+  GDRIVE_READONLY_SCOPE,
+  GDRIVE_SCOPE,
+  googleDriveDriver,
+} from "@/app/lib/server/drivers/gdrive";
+import { createGoogleDriveMock, DOC, FOLDER, MOCK_DRIVE } from "./gdrive-mock";
 
 /**
- * The Google Drive driver against an in-memory stand-in for the parts of Google's APIs it
- * uses (token refresh, files.list with its query language, media, export, resumable upload,
- * update, copy). It follows Google's documented behaviour; it can't prove Google still does.
+ * The Google Drive driver against the in-memory stand-in for Google's APIs (tests/gdrive-mock.ts),
+ * paging two items at a time so same-named items land on different pages. The shared contract
+ * runs over it too, in tests/drivers.contract.test.ts.
  */
-type File = { id: string; name: string; mimeType: string; parents: string[]; bytes?: Buffer; trashed?: boolean; created: number };
+const google = createGoogleDriveMock({ pageSize: 2 });
+const add = google.add;
 
-const FOLDER = "application/vnd.google-apps.folder";
-const FAKE_PAGE = 2;
-const DOC = "application/vnd.google-apps.document";
-let files: Map<string, File>;
-let seq = 0;
-const realFetch = globalThis.fetch;
-const seen: string[] = [];
-
-function add(name: string, parent: string, mimeType: string, bytes?: string): File {
-  const file = { id: `id${++seq}`, name, mimeType, parents: [parent], bytes: bytes === undefined ? undefined : Buffer.from(bytes), created: seq };
-  files.set(file.id, file);
-  return file;
-}
-
-/** Just enough of the Drive query language: `'x' in parents`, `name = 'y'`, `trashed = false`. */
-function query(q: string): File[] {
-  const unquote = (s: string) => s.replace(/\\(.)/g, "$1");
-  const parent = /^'((?:[^'\\]|\\.)*)' in parents/.exec(q)?.[1];
-  const name = / and name = '((?:[^'\\]|\\.)*)'/.exec(q)?.[1];
-  return [...files.values()]
-    .filter((f) => !f.trashed && (parent === undefined || f.parents.includes(unquote(parent))) && (name === undefined || f.name === unquote(name)))
-    .sort((a, b) => a.created - b.created);
-}
-
-const meta = (f: File) => ({
-  id: f.id,
-  name: f.name,
-  mimeType: f.mimeType,
-  ...(f.bytes ? { size: String(f.bytes.length), md5Checksum: `md5-${f.id}` } : {}),
-  modifiedTime: "2026-01-02T03:04:05.000Z",
-});
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const uploads = new Map<string, { file: File; chunks: Buffer[] }>();
-
-async function fakeGoogle(input: string | URL | Request, init: RequestInit = {}): Promise<Response> {
-  const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-  const method = (init.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
-  seen.push(`${method} ${url.pathname}`);
-  const body = async () => {
-    const raw = init.body ?? (input instanceof Request ? await input.text() : undefined);
-    if (raw === undefined || raw === null) return Buffer.alloc(0);
-    if (typeof raw === "string") return Buffer.from(raw);
-    if (raw instanceof URLSearchParams) return Buffer.from(raw.toString());
-    return Buffer.from(raw as Uint8Array);
-  };
-
-  if (url.host === "oauth2.googleapis.com" && url.pathname === "/token") {
-    const form = new URLSearchParams((await body()).toString());
-    if (form.get("refresh_token") !== "refresh-1") return json({ error: "invalid_grant" }, 400);
-    return json({ access_token: "access-1", expires_in: 3600, token_type: "Bearer" });
-  }
-  const auth = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined)).get("authorization");
-  if (url.pathname.startsWith("/upload/drive/v3/session/")) {
-    const upload = uploads.get(url.pathname.split("/").pop()!)!;
-    const chunk = await body();
-    upload.chunks.push(chunk);
-    const range = new Headers(init.headers).get("content-range") ?? "";
-    if (/\/\*$/.test(range)) return new Response(null, { status: 308 });
-    upload.file.bytes = Buffer.concat(upload.chunks);
-    files.set(upload.file.id, upload.file);
-    return json(meta(upload.file));
-  }
-  if (auth !== "Bearer access-1") return json({ error: { code: 401, errors: [{ reason: "authError" }] } }, 401);
-
-  if (url.pathname === "/drive/v3/files" && method === "GET") {
-    const found = query(url.searchParams.get("q") ?? "");
-    // Google may return fewer items than asked for; this stand-in returns pages of 2, so
-    // same-named items land on different pages.
-    const from = Number(url.searchParams.get("pageToken") ?? 0);
-    const page = found.slice(from, from + FAKE_PAGE);
-    return json({ files: page.map(meta), ...(from + FAKE_PAGE < found.length ? { nextPageToken: String(from + FAKE_PAGE) } : {}) });
-  }
-  if (url.pathname === "/drive/v3/files" && method === "POST") {
-    const req = JSON.parse((await body()).toString()) as { name: string; mimeType: string; parents: string[] };
-    return json(meta(add(req.name, req.parents[0], req.mimeType)));
-  }
-  if (url.pathname === "/drive/v3/about") return json({ user: { emailAddress: "someone@example.com" } });
-  const copy = /^\/drive\/v3\/files\/([^/]+)\/copy$/.exec(url.pathname);
-  if (copy) {
-    const from = files.get(copy[1])!;
-    const req = JSON.parse((await body()).toString()) as { name: string; parents: string[] };
-    const made = add(req.name, req.parents[0], from.mimeType);
-    made.bytes = from.bytes;
-    return json(meta(made));
-  }
-  const exp = /^\/drive\/v3\/files\/([^/]+)\/export$/.exec(url.pathname);
-  if (exp) return new Response(`%PDF export of ${files.get(exp[1])!.name}`, { headers: { "content-type": "application/pdf" } });
-  const one = /^\/drive\/v3\/files\/([^/]+)$/.exec(url.pathname);
-  if (one) {
-    const file = files.get(decodeURIComponent(one[1]));
-    if (!file) return json({ error: { code: 404, errors: [{ reason: "notFound" }] } }, 404);
-    if (method === "GET" && url.searchParams.get("alt") === "media") {
-      const range = /bytes=(\d+)-(\d*)/.exec(new Headers(init.headers).get("range") ?? "");
-      if (!range) return new Response(new Uint8Array(file.bytes!), { headers: { "content-length": String(file.bytes!.length) } });
-      const start = Number(range[1]);
-      const end = range[2] ? Number(range[2]) : file.bytes!.length - 1;
-      return new Response(new Uint8Array(file.bytes!.subarray(start, end + 1)), {
-        status: 206,
-        headers: { "content-range": `bytes ${start}-${end}/${file.bytes!.length}`, "content-length": String(end - start + 1) },
-      });
-    }
-    if (method === "PATCH") {
-      const req = JSON.parse((await body()).toString() || "{}") as { name?: string; trashed?: boolean };
-      if (req.name) file.name = req.name;
-      if (req.trashed) file.trashed = true;
-      const add = url.searchParams.get("addParents");
-      const remove = url.searchParams.get("removeParents");
-      if (add && remove) file.parents = [add];
-      return json(meta(file));
-    }
-  }
-  if (url.pathname === "/upload/drive/v3/files" && url.searchParams.get("uploadType") === "resumable") {
-    const req = JSON.parse((await body()).toString()) as { name: string; parents: string[] };
-    const file: File = { id: `id${++seq}`, name: req.name, mimeType: "text/plain", parents: req.parents, created: seq };
-    const session = `s${seq}`;
-    uploads.set(session, { file, chunks: [] });
-    return new Response(null, { status: 200, headers: { location: `https://www.googleapis.com/upload/drive/v3/session/${session}` } });
-  }
-  return json({ error: { code: 400, message: `unhandled ${method} ${url.pathname}` } }, 400);
-}
-
-const driver = (root = "/") => googleDriveDriver({ root, clientId: "1-abc.apps.googleusercontent.com", clientSecret: "secret-1", refreshToken: "refresh-1" });
+const driver = (root = "/") => googleDriveDriver({ root, ...MOCK_DRIVE });
 const text = async (stream: ReadableStream<Uint8Array>) => Buffer.from(await new Response(stream).arrayBuffer()).toString();
 
-beforeAll(() => {
-  vi.stubGlobal("fetch", (input: string | URL | Request, init?: RequestInit) => {
-    const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    return /googleapis\.com/.test(href) ? fakeGoogle(input, init) : realFetch(input, init);
-  });
-});
-afterAll(() => vi.unstubAllGlobals());
+beforeAll(() => google.install());
+afterAll(() => google.uninstall());
 
 function reset() {
-  files = new Map();
-  seq = 0;
-  seen.length = 0;
+  google.clear();
   const work = add("Work", "root", FOLDER);
   add("notes.txt", work.id, "text/plain", "hello drive");
   add("Plan", work.id, DOC);
@@ -284,6 +167,33 @@ describe("Google Drive driver", () => {
     const { failed } = await work.remove(["moved.txt", "already-gone.txt"]);
     expect(failed).toEqual([]);
     await expect(work.read("moved.txt")).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("reads the access Google granted, not the access that was asked for", () => {
+    expect(driveAccessOf(`openid ${GDRIVE_SCOPE}`)).toBe("full");
+    expect(driveAccessOf(GDRIVE_READONLY_SCOPE)).toBe("read");
+    expect(driveAccessOf(`${GDRIVE_READONLY_SCOPE} ${GDRIVE_SCOPE}`)).toBe("full");
+    expect(driveAccessOf("https://www.googleapis.com/auth/drive.file")).toBeNull();
+    expect(driveAccessOf("")).toBeNull();
+  });
+
+  it("trades a sign-in code for a refresh token and says when access is read-only", async () => {
+    const sign = { clientId: "3-abc.apps.googleusercontent.com", clientSecret: "secret-3", verifier: "v".repeat(43), redirectUri: "http://localhost:3000/connect/google-drive" };
+    await expect(exchangeDriveCode({ ...sign, code: "code-full" })).resolves.toEqual({ refreshToken: "refresh-1", readOnlyAccess: false });
+    await expect(exchangeDriveCode({ ...sign, code: "code-read" })).resolves.toEqual({ refreshToken: "refresh-read", readOnlyAccess: true });
+    await expect(exchangeDriveCode({ ...sign, code: "code-unknown" })).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("says why a write fails on a Drive connected with read-only access", async () => {
+    const reader = googleDriveDriver({
+      root: "/Work",
+      clientId: "1-abc.apps.googleusercontent.com",
+      clientSecret: "secret-1",
+      refreshToken: "refresh-read",
+      readOnlyAccess: true,
+    });
+    expect(await text((await reader.read("notes.txt")).stream)).toBe("hello drive");
+    await expect(reader.copy("notes.txt", "copy.txt")).rejects.toMatchObject({ status: 403, message: expect.stringMatching(/read-only access/) });
   });
 
   it("asks for a reconnect when the refresh token stops working", async () => {

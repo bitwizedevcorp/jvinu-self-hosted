@@ -1,3 +1,4 @@
+import { profileOf, type AtRest } from "./providers";
 /**
  * Per-connection options that aren't secret: stored as one JSON column, sent to the page as
  * they are. Each one is validated on the server (app/lib/server/settings.ts).
@@ -13,25 +14,8 @@ export type ConnectionSettings = {
   shareTarget?: { prefix: string };
 };
 
-/**
- * Encryption at rest, per provider: "optional" where the API lets a client ask for it per
- * file (SSE-S3 on S3, SSE-B2 on Backblaze); "always" where the provider encrypts
- * everything anyway; "none" where the API neither offers nor reports it.
- */
-export type AtRest = "optional" | "always" | "none";
+/** Encryption at rest, per provider: kept with the provider profiles (app/lib/providers.ts). */
+export type { AtRest } from "./providers";
 export function atRestEncryption(presetId: string): AtRest {
-  switch (presetId) {
-    case "s3":
-    case "b2":
-      return "optional";
-    case "azure":
-    case "gcs":
-    case "oci":
-    case "r2":
-    case "wasabi":
-    case "storj": // end-to-end encrypted by the network
-      return "always";
-    default:
-      return "none";
-  }
+  return profileOf(presetId)?.atRest ?? "none";
 }

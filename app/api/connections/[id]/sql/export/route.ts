@@ -6,7 +6,6 @@ import { exportSql, type ExportFormat } from "@/app/lib/server/data/sql";
 import { driverFor } from "@/app/lib/server/drivers";
 import { guardConnection } from "@/app/lib/server/guard";
 import { fail, handle, readJson, tooLarge } from "@/app/lib/server/http";
-import { forgetInventory } from "@/app/lib/server/inventory";
 
 const FORMATS: ExportFormat[] = ["csv", "parquet", "json"];
 
@@ -51,7 +50,6 @@ export async function POST(request: Request, ctx: RouteContext<"/api/connections
       if (tables.length) return Response.json({ error: tables[0].message, code: "lake-table", tables }, { status: 409 });
     }
     const saved = await exportSql(driverFor(guarded.connection), body.sql, guarded.connection.bucket, format, targetDriver, key);
-    forgetInventory(target.id);
     await recordActivity({
       connectionId: target.id,
       actor: actorOf(guarded.user),

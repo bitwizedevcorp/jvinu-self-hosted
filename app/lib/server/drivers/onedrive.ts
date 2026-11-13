@@ -670,6 +670,20 @@ export function oneDriveDriver(target: Target): StorageDriver {
 
     inventory: (prefix, maxPages = 100) =>
       run(async () => {
+        // One exact name (SQL's FROM 'sales.csv') is that file; otherwise it's a folder.
+        if (prefix && !prefix.endsWith("/")) {
+          try {
+            const item = await meta(prefix);
+            if (item.file)
+              return {
+                files: [{ key: prefix, size: item.size ?? 0, lastModified: modifiedOf(item), etag: hashOf(item), storageClass: null }],
+                truncated: false,
+              };
+          } catch (error) {
+            if (!isNotFound(error)) throw error;
+          }
+          prefix = `${prefix}/`;
+        }
         const files: Listing["files"] = [];
         let truncated = false;
         try {

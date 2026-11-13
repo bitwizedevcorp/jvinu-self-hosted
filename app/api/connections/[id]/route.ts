@@ -1,7 +1,7 @@
-import { actorOf, forgetConnectionActivity, recordActivity, settingsChanges } from "@/app/lib/server/activity";
+import { actorOf, recordActivity, settingsChanges } from "@/app/lib/server/activity";
+import { removeConnection } from "@/app/lib/server/connection-changes";
 import {
   clearOtherShareTargets,
-  deleteConnection,
   getConnection,
   nameTaken,
   toPublic,
@@ -11,9 +11,6 @@ import { guardConnection } from "@/app/lib/server/guard";
 import { handle, readJson } from "@/app/lib/server/http";
 import { applySettingsPatch } from "@/app/lib/server/settings";
 import { atRestEncryption, type ConnectionSettings } from "@/app/lib/connection-settings";
-import { forgetConnectionItems } from "@/app/lib/server/user-items";
-import { forgetConnectionNotes } from "@/app/lib/server/notes";
-import { forgetConnectionLinks } from "@/app/lib/server/shares";
 
 /** Rename a connection, flip its read-only flag, or set its own storage rate. */
 export async function PATCH(request: Request, ctx: RouteContext<"/api/connections/[id]">) {
@@ -42,6 +39,14 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/connection
     }
     if (body.readOnly !== undefined) {
       if (typeof body.readOnly !== "boolean") return Response.json({ error: "readOnly must be true or false." }, { status: 400 });
+      // Google granted only read access: switching it to read-write would just fail every write.
+      const credentials = guarded.connection.credentials;
+      if (body.readOnly === false && credentials.kind === "gdrive" && credentials.readOnlyAccess) {
+        return Response.json(
+          { error: "This Google Drive was connected with read-only access. Connect it again without Read-only to make changes." },
+          { status: 400 },
+        );
+      }
       patch.readOnly = body.readOnly;
     }
     // The share bucket is written to (copies arrive there), so it can't be read-only.
@@ -95,11 +100,7 @@ export async function DELETE(request: Request, ctx: RouteContext<"/api/connectio
     );
   }
   try {
-    await deleteConnection(guarded.connection.id);
-    await forgetConnectionItems(guarded.connection.id);
-    await forgetConnectionNotes(guarded.connection.id);
-    await forgetConnectionLinks(guarded.connection.id);
-    await forgetConnectionActivity(guarded.connection.id);
+    await removeConnection(guarded.connection.id);
     return new Response(null, { status: 204 });
   } catch (error) {
     return handle(error);

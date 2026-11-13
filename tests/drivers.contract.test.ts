@@ -1,7 +1,9 @@
 /**
  * One contract, every driver: the same behaviour checked against each cloud's emulator
- * (Floci by default). An emulator that isn't running is skipped locally; in CI set
- * JVINU_CONTRACT_REQUIRED=1 so a missing one fails instead.
+ * (Floci by default), against in-process stand-ins for Dropbox, OneDrive and Google Drive,
+ * and against the in-memory driver the other tests use. The contract itself is written on
+ * StorageDriver in app/lib/server/drivers/types.ts. An emulator that isn't running is
+ * skipped locally; in CI set JVINU_CONTRACT_REQUIRED=1 so a missing one fails instead.
  *
  *   docker compose --profile floci up -d && npm run test:contract
  */
@@ -20,11 +22,14 @@ import { checkEncryptedBucket, cryptDriver } from "../app/lib/server/drivers/cry
 import { dropboxDriver, dropboxFolder, exchangeDropboxCode } from "../app/lib/server/drivers/dropbox";
 import { gcsDriver } from "../app/lib/server/drivers/gcs";
 import { ociDriver } from "../app/lib/server/drivers/oci";
+import { googleDriveDriver } from "../app/lib/server/drivers/gdrive";
 import { oneDriveDriver } from "../app/lib/server/drivers/onedrive";
 import { s3Driver } from "../app/lib/server/drivers/s3";
 import { StorageUserError, type StorageDriver } from "../app/lib/server/drivers/types";
 import { runOperation } from "../app/lib/server/operations";
 import { MOCK_APP_KEY, MOCK_CODE, MOCK_REFRESH_TOKEN, startDropboxMock } from "./dropbox-mock";
+import { createGoogleDriveMock, MOCK_DRIVE } from "./gdrive-mock";
+import { memoryDriver, type MemoryDriver } from "./memory-driver";
 import { MOCK_CLIENT_ID, MOCK_REFRESH_TOKEN as ONEDRIVE_MOCK_REFRESH_TOKEN, MOCK_TENANT, startOneDriveMock } from "./onedrive-mock";
 
 const env = (name: string, fallback: string) => process.env[name] || fallback;
@@ -64,10 +69,20 @@ const ONEDRIVE = {
 };
 const oneDrive = (root: string) => oneDriveDriver({ root, ...ONEDRIVE });
 
+// Google Drive: the in-process stand-in for Google's APIs (it answers googleapis.com only).
+const googleMock = createGoogleDriveMock({ pageSize: 100 });
+googleMock.install();
+afterAll(() => googleMock.uninstall());
+const googleDrive = (root: string) => googleDriveDriver({ root, ...MOCK_DRIVE });
+
+// The in-memory driver the other tests use: held to the same contract, so they test against it.
+const memoryBuckets = new Map<string, MemoryDriver>();
+
 const AZURITE_ACCOUNT = "devstoreaccount1";
 const AZURITE_KEY = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMh0==";
 
 async function reachable(url: string): Promise<boolean> {
+  if (url === "about:blank") return true;
   try {
     await fetch(url, { signal: AbortSignal.timeout(2000) });
     return true;
@@ -236,6 +251,21 @@ const HARNESSES: Harness[] = [
     driver: (bucket) => dropbox(`/${bucket}`),
   },
   {
+    // Likewise: a folder at the top of "My Drive".
+    name: "gdrive",
+    endpoint: "https://www.googleapis.com/drive/v3/about",
+    createBucket: (bucket) => googleDrive("/").write(`${bucket}/`, new Uint8Array(0)),
+    deleteBucket: async (bucket) => void (await googleDrive("/").remove([`${bucket}/`])),
+    driver: (bucket) => googleDrive(`/${bucket}`),
+  },
+  {
+    name: "memory",
+    endpoint: "about:blank",
+    createBucket: async (bucket) => void memoryBuckets.set(bucket, memoryDriver()),
+    deleteBucket: async (bucket) => void memoryBuckets.delete(bucket),
+    driver: (bucket) => memoryBuckets.get(bucket) ?? memoryDriver({}, { missing: true }),
+  },
+  {
     // Likewise: a folder at the top of the OneDrive.
     name: "onedrive",
     endpoint: ONEDRIVE.endpoint ?? "https://graph.microsoft.com",
@@ -260,7 +290,7 @@ function encrypted(name: string): Harness {
     raw: base.driver,
   };
 }
-HARNESSES.push(encrypted("s3"), encrypted("dropbox"));
+HARNESSES.push(encrypted("s3"), encrypted("dropbox"), encrypted("gdrive"));
 
 const text = (value: string) => new TextEncoder().encode(value);
 const pattern = (length: number) => new Uint8Array(length).map((_, i) => (i * 31) % 251);
@@ -406,6 +436,29 @@ describe.each(HARNESSES.map((harness, index) => ({ harness, up: status[index] })
       const capped = await driver.inventory("many/", 1);
       expect(capped.truncated).toBe(true);
       expect(capped.files.length).toBeGreaterThan(0);
+    });
+
+    it("finds one exact name, apart from names that start the same way", async () => {
+      await driver.write("exact/sales.csv", text("a,b\n1"), "text/csv");
+      await driver.write("exact/sales.csv.bak", text("old"), "text/plain");
+      await driver.write("exact/sales/inner.csv", text("x"), "text/csv");
+
+      // SQL's FROM 'exact/sales.csv': the file itself, with its size. Others starting the
+      // same way may come back on string-prefix stores; nothing below a folder of that name.
+      const one = await driver.inventory("exact/sales.csv", 1);
+      expect(one.files.find((file) => file.key === "exact/sales.csv")?.size).toBe(5);
+      expect(one.files.every((file) => file.key.startsWith("exact/sales.csv"))).toBe(true);
+      expect(one.files.some((file) => file.sizeUnknown)).toBe(false);
+      expect((await driver.inventory("exact/missing.csv", 1)).files.map((file) => file.key)).not.toContain("exact/missing.csv");
+
+      // "Is that name taken?", as operations and transfers ask before writing.
+      expect((await driver.listKeys("exact/sales.csv", 5)).keys).toContain("exact/sales.csv");
+      expect((await driver.listKeys("exact/missing.csv", 5)).keys).not.toContain("exact/missing.csv");
+
+      // A folder named without its "/" still reaches what's inside.
+      expect((await driver.inventory("exact/sales", 1)).files.map((file) => file.key)).toContain("exact/sales/inner.csv");
+
+      await driver.remove(["exact/sales.csv", "exact/sales.csv.bak", "exact/sales/inner.csv"]);
     });
 
     it("copies, leaving the source", async () => {

@@ -35,10 +35,22 @@ type Target = {
   clientId: string;
   clientSecret: string;
   refreshToken: string;
+  /** Google granted read-only access: a refused write says so, rather than a generic 403. */
+  readOnlyAccess?: boolean;
 };
 
 /** Everything jvinu does: browse, read, upload, move, trash. */
 export const GDRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
+/** For a read-only connection: Google itself then refuses any change, whatever jvinu sends. */
+export const GDRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+
+/** What a granted scope list allows: full access, read-only, or nothing jvinu can use. */
+export function driveAccessOf(scope: string): "full" | "read" | null {
+  const granted = scope.split(/\s+/);
+  if (granted.includes(GDRIVE_SCOPE)) return "full";
+  if (granted.includes(GDRIVE_READONLY_SCOPE)) return "read";
+  return null;
+}
 const API = "https://www.googleapis.com/drive/v3";
 const UPLOAD = "https://www.googleapis.com/upload/drive/v3";
 const FOLDER = "application/vnd.google-apps.folder";
@@ -132,29 +144,33 @@ const reasonOf = (error: unknown): string => {
 const lapsed = () => new StorageUserError("Google Drive access was revoked or has lapsed — reconnect this Drive.", 401);
 
 /** Codes are single-use: a retry after a failed connect reuses the token it already bought. */
-const exchanged = new Map<string, { refreshToken: string; expires: number }>();
+const exchanged = new Map<string, { refreshToken: string; readOnlyAccess: boolean; expires: number }>();
 
-/** Trades the code Google handed back for a long-lived refresh token. */
+/**
+ * Trades the code Google handed back for a long-lived refresh token, and says whether the
+ * access granted is read-only — from what Google granted, not what the form asked for.
+ */
 export async function exchangeDriveCode(input: {
   clientId: string;
   clientSecret: string;
   code: string;
   verifier: string;
   redirectUri: string;
-}): Promise<string> {
+}): Promise<{ refreshToken: string; readOnlyAccess: boolean }> {
   const id = createHash("sha256").update(`${input.clientId}\n${input.code}\n${input.verifier}`).digest("hex");
   const now = Date.now();
   for (const [key, value] of exchanged) if (value.expires < now) exchanged.delete(key);
   const cached = exchanged.get(id);
-  if (cached) return cached.refreshToken;
+  if (cached) return { refreshToken: cached.refreshToken, readOnlyAccess: cached.readOnlyAccess };
 
   const client = newClient(input.clientId, input.clientSecret, input.redirectUri);
   let refreshToken: string | null | undefined;
+  let access: "full" | "read" | null;
   try {
     const { tokens } = await client.getToken({ code: input.code, codeVerifier: input.verifier, redirect_uri: input.redirectUri });
     refreshToken = tokens.refresh_token;
-    if (tokens.scope && !tokens.scope.split(" ").includes(GDRIVE_SCOPE))
-      throw new StorageUserError("Google didn't grant access to Drive. Sign in again and tick the Drive permission.", 400);
+    access = driveAccessOf(tokens.scope ?? "");
+    if (!access) throw new StorageUserError("Google didn't grant access to Drive. Sign in again and tick the Drive permission.", 400);
   } catch (error) {
     if (error instanceof StorageUserError) throw error;
     if (networkCode(error)) throw unreachable(undefined, "Google");
@@ -172,8 +188,9 @@ export async function exchangeDriveCode(input: {
       "Google didn't grant offline access. Remove jvinu under myaccount.google.com → Security → Third-party access, then sign in again.",
       502,
     );
-  exchanged.set(id, { refreshToken, expires: now + 10 * 60_000 });
-  return refreshToken;
+  const readOnlyAccess = access === "read";
+  exchanged.set(id, { refreshToken, readOnlyAccess, expires: now + 10 * 60_000 });
+  return { refreshToken, readOnlyAccess };
 }
 
 /* ------------------------------------------------------------------ */
@@ -191,6 +208,8 @@ function explain(error: unknown, target: Target): StorageUserError {
   if (status === 429 || /rateLimitExceeded/i.test(reason)) return new StorageUserError("Google Drive is busy — try again in a moment.", 429);
   if (reason === "accessNotConfigured")
     return new StorageUserError("Turn on the Google Drive API for this project in Google Cloud (APIs & Services → Library), then try again.", 403);
+  if (target.readOnlyAccess && (status === 403 || reason === "insufficientPermissions"))
+    return new StorageUserError("This Google Drive was connected with read-only access. Reconnect it without Read-only to make changes.", 403);
   if (reason === "insufficientPermissions" || reason === "insufficientFilePermissions" || reason === "appNotAuthorizedToFile")
     return new StorageUserError("Google Drive doesn't allow that here.", 403);
   if (status === 403) return new StorageUserError("Google Drive refused that request.", 403);
@@ -432,7 +451,11 @@ export function googleDriveDriver(target: Target): StorageDriver {
     return { folders, files };
   };
 
-  /** Walks the tree under a folder, breadth first. Returns whether the page cap cut it short. */
+  /**
+   * Walks the tree under a folder, breadth first. A "page" elsewhere is about 1,000 objects;
+   * here `maxPages` allows that many entries, and bounds the requests too (most folders are
+   * small, so a page of S3 keys can span many of them). Returns whether it stopped short.
+   */
   async function walk(
     prefix: string,
     visit: (found: { folders: { key: string; id: string }[]; files: Listing["files"] }) => boolean | void,
@@ -442,16 +465,23 @@ export function googleDriveDriver(target: Target): StorageDriver {
     const base = prefix && !prefix.endsWith("/") ? `${prefix}/` : prefix;
     const start = await folderId(partsOf(base));
     if (!start) return false;
+    const maxEntries = maxPages * PAGE;
+    const maxRequests = maxPages * 25;
     const queue: { id: string; prefix: string }[] = [{ id: start, prefix: base }];
-    let pages = 0;
+    let requests = 0;
+    let entries = 0;
     while (queue.length) {
+      if (requests >= maxRequests || entries >= maxEntries) return true;
       const folder = queue.shift()!;
-      if (pages >= maxPages) return true;
-      const read = await readFolder(folder.id, maxPages - pages);
-      pages += read.pages;
-      const found = keyed(read.entries, folder.prefix);
+      const read = await readFolder(folder.id, maxRequests - requests);
+      requests += read.pages;
+      // Past the entry budget, this folder is cut where the budget ends.
+      const room = maxEntries - entries;
+      const over = read.entries.length > room;
+      entries += read.entries.length;
+      const found = keyed(over ? read.entries.slice(0, room) : read.entries, folder.prefix);
       for (const child of found.folders) queue.push({ id: child.id, prefix: child.key });
-      if (visit(found) === false || read.truncated) return true;
+      if (visit(found) === false || read.truncated || over) return true;
     }
     return false;
   }

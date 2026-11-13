@@ -1,6 +1,5 @@
 import { actorOf, recordActivity } from "@/app/lib/server/activity";
 import { driverFor } from "@/app/lib/server/drivers";
-import { forgetInventory } from "@/app/lib/server/inventory";
 import { guardConnection } from "@/app/lib/server/guard";
 import { cleanPrefix, fail, handle, readJson } from "@/app/lib/server/http";
 
@@ -33,7 +32,6 @@ export async function POST(request: Request, ctx: RouteContext<"/api/connections
       return fail("Folder names can't be empty or contain “/”.", 400);
     // Object stores have no folders: a zero-byte object ending in "/" is the convention.
     await driverFor(guarded.connection).write(`${prefix}${folder}/`, new Uint8Array());
-    forgetInventory(guarded.connection.id);
     await recordActivity({ connectionId: guarded.connection.id, actor: actorOf(guarded.user), action: "folder-created", target: `${prefix}${folder}/` });
     return Response.json({ created: `${prefix}${folder}/` }, { status: 201 });
   } catch (error) {

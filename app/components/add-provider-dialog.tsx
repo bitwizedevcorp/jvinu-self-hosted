@@ -149,7 +149,8 @@ function signInWithGoogle(values: Record<string, string>): Record<string, string
       client_id: clientId,
       redirect_uri: window.location.origin + DRIVE_CALLBACK_PATH,
       response_type: "code",
-      scope: "https://www.googleapis.com/auth/drive",
+      // Read-only asks Google for read-only access too: then Google itself refuses any change.
+      scope: values.readOnly === "true" ? "https://www.googleapis.com/auth/drive.readonly" : "https://www.googleapis.com/auth/drive",
       // A refresh token, every time: without consent Google only sends one the first time.
       access_type: "offline",
       prompt: "consent",
@@ -210,9 +211,10 @@ const SCHEMAS: Record<ConnectableKind, Schema> = {
     ],
     security: (
       <>
-        The client ID and secret are sealed on this server with a refresh token — never your Google password. Remove access any
-        time at myaccount.google.com → Security → Third-party apps with account access. Files are served through this app rather
-        than as Drive links, and deletes go to the Drive bin. Google Docs, Sheets and Slides open as PDFs.
+        With Read-only on, jvinu asks Google for read-only access, so Google itself refuses any change; turning it off later means
+        connecting again. The client ID and secret are sealed on this server with a refresh token — never your Google password.
+        Remove access any time at myaccount.google.com → Security → Third-party apps with account access. Files are served
+        through this app rather than as Drive links, and deletes go to the Drive bin. Google Docs, Sheets and Slides open as PDFs.
       </>
     ),
   },
@@ -806,7 +808,8 @@ export function AddProviderDialog({
                   <button
                     type="button"
                     onClick={async () => {
-                      const result = await action.run(values);
+                      // The read-only choice decides what some sign-ins ask for (Google Drive).
+                      const result = await action.run({ ...values, readOnly: readOnly ? "true" : "" });
                       if (typeof result === "string") {
                         setErrors((current) => ({ ...current, [field.id]: result }));
                         return;
@@ -1029,7 +1032,11 @@ export function AddProviderDialog({
             <input
               type="checkbox"
               checked={readOnly}
-              onChange={(event) => setReadOnly(event.target.checked)}
+              onChange={(event) => {
+                setReadOnly(event.target.checked);
+                // A Google sign-in was for read-only or full access: a changed choice needs a new one.
+                if (presetId === "gdrive" && values.codeVerifier) setValues((current) => ({ ...current, codeVerifier: "", code: "" }));
+              }}
               className="mt-0.5 size-4 cursor-pointer accent-[var(--accent-fill)]"
             />
             <span>

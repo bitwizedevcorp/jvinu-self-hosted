@@ -1,5 +1,6 @@
 import "server-only";
 import type { StoredConnection } from "./connections";
+import { onContentsChanged } from "./connection-changes";
 import { driverFor } from "./drivers";
 import type { Listing } from "./drivers/types";
 
@@ -27,7 +28,8 @@ export function inventoryOf(connection: StoredConnection, prefix: string, refres
   return value;
 }
 
-/** Forget every scan of a connection: call after writing to it. */
+/** Forget every scan of a connection: done for every write through driverFor (connection-changes.ts). */
 export function forgetInventory(connectionId: string) {
   for (const key of cache.keys()) if (key.startsWith(`${connectionId}|`)) cache.delete(key);
 }
+onContentsChanged(forgetInventory);

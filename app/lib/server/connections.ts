@@ -1,4 +1,5 @@
 import "server-only";
+import { signsLinks } from "./drivers";
 import { randomUUID } from "node:crypto";
 import { openWith, sealWith } from "./crypto";
 import { db } from "./db";
@@ -29,9 +30,9 @@ export function storagePublicUrl(): string | null {
   }
 }
 
-export type ProviderKind = "s3" | "azure" | "gcs" | "oci" | "dropbox" | "onedrive" | "gdrive";
-/** What the user picked. S3-compatible clouds run on the S3 driver with their own endpoint. */
-export type PresetId = ProviderKind | "r2" | "wasabi" | "b2" | "spaces" | "scaleway" | "storj" | "minio" | "garage";
+/** What the user picked (a kind, or an S3-compatible cloud on the S3 driver): see app/lib/providers.ts. */
+export type { PresetId, ProviderKind } from "../providers";
+import type { PresetId } from "../providers";
 
 /** Why the server, not a user, owns a connection: bundled Garage, or storage bought from a seller. */
 export type Managed = "bundled-storage" | "cloud-storage";
@@ -81,6 +82,11 @@ export type GoogleDriveCredentials = {
   clientSecret: string;
   /** From the sign-in. Lasts until the user removes the app's access. */
   refreshToken: string;
+  /**
+   * Google granted read-only access (drive.readonly): Google itself refuses every change,
+   * so the connection stays read-only until it's connected again with full access.
+   */
+  readOnlyAccess?: boolean;
   /** The account's email, shown as the connection hint. */
   account?: string;
 };
@@ -369,12 +375,7 @@ export function toPublic(connection: StoredConnection): PublicConnection {
     region: connection.region,
     endpoint: connection.endpoint,
     accessKeyHint: hintFor(c),
-    // Encrypted files can only be read through this app, so the provider can't link to them.
-    canShareLinks: connection.crypt
-      ? false
-      : connection.presetId === "garage"
-        ? Boolean(storagePublicUrl())
-        : c.kind === "s3" || (c.kind === "azure" && !connection.endpoint) || (c.kind === "gcs" && Boolean(c.privateKey)),
+    canShareLinks: signsLinks(connection),
     // The public demo changes nothing, whatever a connection's own setting says.
     readOnly: connection.readOnly || process.env.JVINU_DEMO === "1",
     managed: Boolean(connection.managed),

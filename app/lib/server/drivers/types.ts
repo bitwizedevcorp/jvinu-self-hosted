@@ -135,31 +135,55 @@ export interface BucketAudit {
   publicObject(key: string): Promise<boolean | null>;
 }
 
-/** Everything the app does to a bucket, regardless of whose cloud it is. */
+/**
+ * Everything the app does to a bucket, regardless of whose cloud it is.
+ *
+ * The contract every driver keeps (tests/drivers.contract.test.ts holds each one to it):
+ *
+ * - **Keys.** "a/b.txt" names a file; a key ending in "/" ("a/") names a folder; "" is the
+ *   connection's top. Keys never hold "." or ".." segments (driverFor refuses them).
+ * - **Folder markers.** `write("a/", empty)` makes an empty folder. A marker is never listed
+ *   as a file, never counted, and never inventoried; `listKeys` returns an empty folder's own
+ *   key, since that's what must be deleted or copied to keep it.
+ * - **A folder, or one exact name.** `listKeys` and `inventory` take either a folder key (or
+ *   "") — everything below it — or a file key without the "/", for which the result holds that
+ *   key exactly when the file exists. Stores that match by string prefix (S3) may return other
+ *   keys that start the same way ("a.txt.bak"), so callers look for the key they asked for and
+ *   never count on what else comes back. A folder named without its "/" ("a") still reaches
+ *   what's inside it. `list` and `stats` take a folder key or "" only.
+ * - **Pages.** `nextToken` is opaque: pass it back to `list` with the same prefix, nothing
+ *   else. driverFor binds each token to its connection and prefix and refuses any other.
+ * - **Sizes.** `size` is the bytes `read` will return. When the service can't know them until
+ *   the file is read (a Google document's export), `size` is 0 and `sizeUnknown` is set.
+ * - **Errors.** Failures a person can act on are `StorageUserError`s with an HTTP status:
+ *   404 for a missing file or connection folder, 416 for a range outside the file, 409 for a
+ *   name that's taken.
+ */
 export interface StorageDriver {
-  /** Proves the credentials can list the bucket; returns its region if the service says. */
+  /** Proves the credentials can list the bucket; returns its region if the service says. 404 if it isn't there. */
   verify(): Promise<{ region?: string }>;
-  /** One page (≤ 1,000 entries) of a folder level. */
+  /** One page (≤ 1,000 entries) of one folder level: files and the folders below. A folder that's gone reads as empty. */
   list(prefix: string, token?: string): Promise<Listing>;
-  /** Every key under a prefix, flat, up to `max` — for folder-wide operations. */
+  /** Every key below a folder (or one exact name, see above), flat, up to `max`: files and empty folders' own keys. */
   listKeys(prefix: string, max: number): Promise<{ keys: string[]; truncated: boolean }>;
+  /** Files and bytes below a folder, reading up to `maxPages` pages of about 1,000. */
   stats(prefix: string, maxPages?: number): Promise<FolderStats>;
   /**
-   * Every file under a prefix, flat, with size, class and date — up to `maxPages` pages of
-   * about 1,000. For analytics; `truncated` when the cap was hit.
+   * Every file below a folder (or one exact name, see above), flat, with size, class and date —
+   * up to `maxPages` pages of about 1,000. For analytics, SQL, zips; `truncated` when the cap was hit.
    */
   inventory(prefix: string, maxPages?: number): Promise<{ files: Listing["files"]; truncated: boolean }>;
   /** A signed URL anyone can use, or null when this connection can't sign one. */
   signedUrl(key: string, download: boolean, expiresIn: number): Promise<string | null>;
-  /** The object's bytes — or only `range` of them, for media seeking and resumed downloads. */
+  /** The object's bytes — or only `range` of them, for media seeking and resumed downloads. 404 if missing, 416 if out of range. */
   read(key: string, range?: ByteRange): Promise<ObjectBody>;
-  /** Small, in-memory writes (folder markers). */
+  /** Small, in-memory writes; a folder key with empty bytes makes an empty folder. Overwrites. */
   write(key: string, body: Uint8Array, contentType?: string): Promise<void>;
-  /** Streams a file of any size — multipart / block / resumable as the cloud prefers. */
+  /** Streams a file of any size — multipart / block / resumable as the cloud prefers. Overwrites. */
   upload(key: string, body: ReadableStream<Uint8Array>, size: number | undefined, contentType?: string): Promise<void>;
-  /** Deletes keys; returns the ones that couldn't be deleted. */
+  /** Deletes keys; returns the ones that couldn't be deleted. A key that's already gone isn't a failure. */
   remove(keys: string[]): Promise<{ failed: string[] }>;
-  /** Server-side where the cloud supports it. */
+  /** Server-side where the cloud supports it. 404 if the source is missing. */
   copy(source: string, destination: string): Promise<void>;
   /** One object's metadata, including how it's encrypted at rest. */
   head?(key: string): Promise<ObjectHead>;
@@ -170,16 +194,16 @@ export interface StorageDriver {
   /** A native rename, where one exists; otherwise callers copy then delete. */
   rename?(source: string, destination: string): Promise<void>;
   /**
-   * Folders are real (Dropbox): copy, rename and remove take a folder key ("a/") and act
-   * on the whole tree in one call, so callers needn't expand it object by object.
+   * Folders are real (Dropbox, OneDrive, Google Drive): copy, rename and remove take a folder
+   * key ("a/") and act on the whole tree in one call, so callers needn't expand it object by object.
    */
   nativeFolders?: boolean;
+  /** Bucket-level checks for Storage X-Ray; absent where the cloud has no API for them. */
+  audit?: BucketAudit;
   /**
    * Set when the bucket holds only ciphertext (jvinu encryption): whatever this server
    * keeps that's derived from the files' contents (thumbnails) is sealed with it too.
    */
-  /** Bucket-level checks for Storage X-Ray; absent where the cloud has no API for them. */
-  audit?: BucketAudit;
   cacheCipher?: { seal(data: Uint8Array): Uint8Array; open(data: Uint8Array): Uint8Array };
 }
 

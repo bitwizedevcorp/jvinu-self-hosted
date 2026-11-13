@@ -1,5 +1,5 @@
 import { actorOf, recordActivity } from "@/app/lib/server/activity";
-import { forgetTables, tablesTouched } from "@/app/lib/server/data/lake";
+import { tablesTouched } from "@/app/lib/server/data/lake";
 import { driverFor } from "@/app/lib/server/drivers";
 import { managedBlocks } from "@/app/lib/server/bundled-storage";
 import { guardConnection } from "@/app/lib/server/guard";
@@ -135,7 +135,6 @@ export async function POST(request: Request, ctx: RouteContext<"/api/connections
       }
     }
     const prepared = await prepareOperation(driver, operation);
-    forgetTables(guarded.connection.id);
     const job = await startJob(guarded.user.id, guarded.connection, prepared, label);
     // Moving something to where it already is does nothing, and isn't history.
     if (prepared.pairs.length) {

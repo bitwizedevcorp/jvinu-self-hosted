@@ -13,6 +13,9 @@ import { StorageUserError, type StorageDriver } from "./types";
 import { atRestEncryption } from "../../connection-settings";
 import { dataKeyOf } from "../crypt";
 import { forbiddenHost } from "../egress";
+import { macWith } from "../crypto";
+import { trackWrites } from "../connection-changes";
+import { timingSafeEqual } from "node:crypto";
 
 export { StorageUserError } from "./types";
 export type { FolderStats, Listing, StorageDriver } from "./types";
@@ -35,7 +38,42 @@ export function driverFor(connection: DriverTarget): StorageDriver {
     throw new StorageUserError("This connection's endpoint is a cloud metadata address, which jvinu doesn't connect to.", 400);
   }
   const driver = cloudDriver(connection);
-  return guardKeys(connection.crypt ? cryptDriver(driver, dataKeyOf(connection.crypt.key)) : driver);
+  const scope = connection.id ?? `${connection.credentials.kind}\n${connection.bucket}\n${connection.endpoint ?? ""}`;
+  const usable = bindPageTokens(connection.crypt ? cryptDriver(driver, dataKeyOf(connection.crypt.key)) : driver, scope);
+  // A saved connection's writes forget what this server remembered about its files.
+  return guardKeys(connection.id ? trackWrites(usable, connection.id) : usable);
+}
+
+const TOKEN_PURPOSE = "page-token";
+const invalidToken = () => new StorageUserError("That page of the listing is no longer valid. Refresh.", 400);
+
+/**
+ * Page tokens go to the browser and come back. Some drivers' tokens are addresses the driver
+ * then follows (OneDrive's are Graph URLs): one edited by hand could list a folder outside the
+ * connection's own. So each token leaves signed to its connection and prefix, and comes back
+ * only to the `list` call it was made for.
+ */
+export function bindPageTokens(driver: StorageDriver, scope: string): StorageDriver {
+  const sign = (prefix: string, token: string) => macWith(TOKEN_PURPOSE, `${scope}\n${prefix}\n${token}`).slice(0, 22);
+  return new Proxy(driver, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (property !== "list" || typeof value !== "function") return typeof value === "function" ? value.bind(target) : value;
+      return async (prefix: string, token?: string) => {
+        let inner: string | undefined;
+        if (token !== undefined) {
+          const dot = token.indexOf(".");
+          if (dot !== 22) throw invalidToken();
+          inner = token.slice(dot + 1);
+          const given = Buffer.from(token.slice(0, dot));
+          const expected = Buffer.from(sign(prefix, inner));
+          if (given.length !== expected.length || !timingSafeEqual(given, expected)) throw invalidToken();
+        }
+        const page = await (value as StorageDriver["list"]).call(target, prefix, inner);
+        return page.nextToken === undefined ? page : { ...page, nextToken: `${sign(prefix, page.nextToken)}.${page.nextToken}` };
+      };
+    },
+  });
 }
 
 /**
@@ -117,6 +155,19 @@ function s3Metadata(presetId: StoredConnection["presetId"] | undefined, endpoint
   }
 }
 
+/**
+ * Whether this connection's driver gives out signed links (its `signedUrl` returns one), so
+ * the page can offer them. Kept beside the drivers it describes: change one, change this.
+ * Encrypted files can only be read through this app, so no provider link would open them.
+ */
+export function signsLinks(connection: DriverTarget): boolean {
+  const c = connection.credentials;
+  if (connection.crypt) return false;
+  if (connection.presetId === "garage") return Boolean(storagePublicUrl());
+  // s3.ts signs always; azure.ts not against an emulator; gcs.ts only with a key; the rest never.
+  return c.kind === "s3" || (c.kind === "azure" && !connection.endpoint) || (c.kind === "gcs" && Boolean(c.privateKey));
+}
+
 /** The cloud's own driver, without jvinu encryption: what's stored, as it's stored. */
 export function cloudDriver(connection: DriverTarget): StorageDriver {
   const { bucket, region, endpoint, credentials: c } = connection;
@@ -159,7 +210,13 @@ export function cloudDriver(connection: DriverTarget): StorageDriver {
     case "dropbox":
       return dropboxDriver({ root: bucket, appKey: c.appKey, refreshToken: c.refreshToken });
     case "gdrive":
-      return googleDriveDriver({ root: bucket, clientId: c.clientId, clientSecret: c.clientSecret, refreshToken: c.refreshToken });
+      return googleDriveDriver({
+        root: bucket,
+        clientId: c.clientId,
+        clientSecret: c.clientSecret,
+        refreshToken: c.refreshToken,
+        readOnlyAccess: c.readOnlyAccess,
+      });
     case "onedrive": {
       const id = connection.id;
       return oneDriveDriver({

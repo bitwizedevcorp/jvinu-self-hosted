@@ -174,8 +174,12 @@ other drives aren't listed.
 In Connect Provider, enter the client ID and secret, click **Sign in with Google**, approve, and
 paste the code the page shows into **Sign-in code**, then click **Connect**. It's the
 authorization-code flow with PKCE: the code is useless without the verifier, which never leaves
-the form. The app asks for the `drive` scope. The server keeps, sealed, only the client ID,
-secret and a refresh token.
+the form. The server keeps, sealed, only the client ID, secret and a refresh token.
+
+With **Read-only** ticked, jvinu asks Google for read-only access (`drive.readonly`), so Google
+itself refuses any change, whatever jvinu sends. Such a connection stays read-only: to make
+changes, connect it again with Read-only off, which asks for full access (`drive`). The server
+goes by what Google actually granted, not by what was asked for.
 
 Google Docs, Sheets, Slides and Drawings are listed with `.pdf` added and open as a PDF export.
 Deleted items go to the Drive bin. Two things Drive allows that paths can't show are left out:

@@ -1,11 +1,10 @@
 import { actorOf, recordActivity } from "@/app/lib/server/activity";
 import { managedBlocks } from "@/app/lib/server/bundled-storage";
 import { getConnection } from "@/app/lib/server/connections";
-import { forgetTables, tablesTouched } from "@/app/lib/server/data/lake";
+import { tablesTouched } from "@/app/lib/server/data/lake";
 import { driverFor } from "@/app/lib/server/drivers";
 import { guardConnection } from "@/app/lib/server/guard";
 import { cleanPrefix, fail, handle, readJson, tooLarge } from "@/app/lib/server/http";
-import { forgetInventory } from "@/app/lib/server/inventory";
 import { startTask } from "@/app/lib/server/jobs";
 import type { OperationItem } from "@/app/lib/server/operations";
 import { pairsFor, planTransfer, runTransfer, TRANSFER_LIMIT, type TransferPair } from "@/app/lib/server/transfer";
@@ -97,12 +96,8 @@ export async function POST(request: Request, ctx: RouteContext<"/api/connections
     }
 
     const job = await startTask(guarded.user.id, guarded.connection.id, "transfer", label, async (report, cancelled) => {
-      try {
-        return await runTransfer(source, targetDriver, pairs, report, cancelled);
-      } finally {
-        forgetInventory(target.id);
-        forgetTables(target.id);
-      }
+      // Each write to the target forgets what was remembered about it (connection-changes.ts).
+      return runTransfer(source, targetDriver, pairs, report, cancelled);
     });
     // On both sides: what left this connection, and what arrived on the other.
     const actor = actorOf(guarded.user);

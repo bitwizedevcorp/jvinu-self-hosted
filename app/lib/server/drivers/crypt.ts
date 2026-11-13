@@ -81,7 +81,14 @@ export function cryptDriver(inner: StorageDriver, key: Uint8Array): StorageDrive
 
     inventory: async (prefix, maxPages) => {
       const { files, truncated } = await inner.inventory(prefix, maxPages);
-      return { files: mapFiles(files), truncated };
+      const mapped = mapFiles(files);
+      // One exact name is stored with the suffix: a store that matches whole names (Dropbox,
+      // OneDrive, Google Drive) only finds it under that name.
+      if (prefix && !isFolderKey(prefix) && !mapped.some((file) => file.key === prefix)) {
+        const exact = mapFiles((await inner.inventory(stored(prefix), 1)).files).find((file) => file.key === prefix);
+        if (exact) return { files: [exact, ...mapped], truncated };
+      }
+      return { files: mapped, truncated };
     },
 
     // Totals in plaintext bytes, from the same flat listing.

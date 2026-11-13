@@ -1,8 +1,7 @@
 import { actorOf, recordActivity } from "@/app/lib/server/activity";
 import { managedBlocks } from "@/app/lib/server/bundled-storage";
-import { forgetTables, tablesTouched } from "@/app/lib/server/data/lake";
+import { tablesTouched } from "@/app/lib/server/data/lake";
 import { driverFor } from "@/app/lib/server/drivers";
-import { forgetInventory } from "@/app/lib/server/inventory";
 import { saveItem } from "@/app/lib/server/user-items";
 import { guardConnection } from "@/app/lib/server/guard";
 import { fail, handle } from "@/app/lib/server/http";
@@ -44,10 +43,8 @@ export async function PUT(request: Request, ctx: RouteContext<"/api/connections/
         return Response.json({ error: tables[0].message, code: "lake-table", tables }, { status: 409 });
       }
     }
+    // The upload forgets the connection's scans and found tables (connection-changes.ts).
     await driver.upload(key, request.body, size, request.headers.get("content-type") || undefined);
-    forgetInventory(guarded.connection.id);
-    // An upload can create a table (its _delta_log, metadata or .hoodie folder): look again.
-    if (/(^|\/)(_delta_log|metadata|\.hoodie)\//.test(key)) forgetTables(guarded.connection.id);
     await saveItem(guarded.user.id, "recent", guarded.connection.id, key, {
       kind: "file",
       size: size ?? null,

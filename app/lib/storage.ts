@@ -363,10 +363,8 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   },
 ];
 
-/** Providers with a working connector; the rest are listed as coming soon. */
-export const CONNECTABLE = ["s3", "azure", "gcs", "oci", "r2", "wasabi", "b2", "spaces", "scaleway", "storj", "minio", "dropbox", "onedrive", "gdrive"] as const;
-export type ConnectableKind = (typeof CONNECTABLE)[number];
-export const isConnectable = (id: string): id is ConnectableKind => (CONNECTABLE as readonly string[]).includes(id);
+/** Providers with a working connector (the rest are listed as coming soon): kept with the provider profiles. */
+export { CONNECTABLE, isConnectable, type ConnectableKind } from "./providers";
 
 export function findPreset(presetId: string | undefined): ProviderPreset | undefined {
   return PROVIDER_PRESETS.find((preset) => preset.id === presetId);
