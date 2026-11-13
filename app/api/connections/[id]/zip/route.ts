@@ -76,8 +76,9 @@ export async function GET(request: Request, ctx: RouteContext<"/api/connections/
     }
 
     const entries = zipEntries(plan, driverFor(guarded.connection));
-    // With nothing compressed and nothing that might be left out, the length is known up
-    // front, so the browser can show progress and time left.
+    // With nothing compressed, nothing that might be left out and every size known (a
+    // Google document's isn't until it's exported), the length is known up front, so the
+    // browser can show progress and time left.
     const length = plan.archived === 0 ? zipLength(entries) : null;
     const stream = zipStream(entries, {
       exactSizes: length !== null,

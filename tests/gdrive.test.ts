@@ -9,6 +9,7 @@ import { driveFolder, driveListedName, driveQuote, googleDriveDriver } from "@/a
 type File = { id: string; name: string; mimeType: string; parents: string[]; bytes?: Buffer; trashed?: boolean; created: number };
 
 const FOLDER = "application/vnd.google-apps.folder";
+const FAKE_PAGE = 2;
 const DOC = "application/vnd.google-apps.document";
 let files: Map<string, File>;
 let seq = 0;
@@ -73,7 +74,11 @@ async function fakeGoogle(input: string | URL | Request, init: RequestInit = {})
 
   if (url.pathname === "/drive/v3/files" && method === "GET") {
     const found = query(url.searchParams.get("q") ?? "");
-    return json({ files: found.map(meta) });
+    // Google may return fewer items than asked for; this stand-in returns pages of 2, so
+    // same-named items land on different pages.
+    const from = Number(url.searchParams.get("pageToken") ?? 0);
+    const page = found.slice(from, from + FAKE_PAGE);
+    return json({ files: page.map(meta), ...(from + FAKE_PAGE < found.length ? { nextPageToken: String(from + FAKE_PAGE) } : {}) });
   }
   if (url.pathname === "/drive/v3/files" && method === "POST") {
     const req = JSON.parse((await body()).toString()) as { name: string; mimeType: string; parents: string[] };
@@ -196,6 +201,66 @@ describe("Google Drive driver", () => {
     expect(await text((await work.read("it's.txt")).stream)).toBe("quoted");
     expect(await text((await driver("/").read("Work/Sub/deep.csv")).stream)).toBe("a,b\n1,2\n");
     await expect(work.read("nothing.txt")).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("lists each path once, as it opens, even when duplicates fall on different pages", async () => {
+    // Created in this order, two to a page: every duplicate pair straddles a page boundary.
+    const shelf = add("Shelf", "root", FOLDER);
+    add("filler-1.txt", shelf.id, "text/plain", "1");
+    const olderTwin = add("Twin", shelf.id, FOLDER);
+    const newerTwin = add("Twin", shelf.id, FOLDER);
+    add("inside-older.txt", olderTwin.id, "text/plain", "reachable");
+    add("inside-newer.txt", newerTwin.id, "text/plain", "hidden behind the older folder");
+    add("Report", shelf.id, DOC); // listed as Report.pdf, unless a stored Report.pdf exists
+    add("filler-2.txt", shelf.id, "text/plain", "2");
+    add("Report.pdf", shelf.id, "application/pdf", "stored pdf");
+    add("same.txt", shelf.id, "text/plain", "older");
+    add("filler-3.txt", shelf.id, "text/plain", "3");
+    add("same.txt", shelf.id, "text/plain", "newer");
+
+    const d = driver("/Shelf");
+    const listing = await d.list("");
+    const keys = [...listing.folders, ...listing.files.map((file) => file.key)];
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(listing.folders).toEqual(["Twin/"]);
+    expect(listing.files.map((file) => file.key).sort()).toEqual(["Report.pdf", "filler-1.txt", "filler-2.txt", "filler-3.txt", "same.txt"]);
+    // The stored PDF wins over the Google document, and is a real file with a known size.
+    const report = listing.files.find((file) => file.key === "Report.pdf")!;
+    expect(report.sizeUnknown).toBeUndefined();
+    expect(report.size).toBe("stored pdf".length);
+    expect(await text((await d.read("Report.pdf")).stream)).toBe("stored pdf");
+    expect(await text((await d.read("same.txt")).stream)).toBe("older");
+
+    // Walking the tree sees only what paths reach: the older Twin's contents, once each.
+    const { files } = await d.inventory("");
+    expect(files.map((file) => file.key).sort()).toEqual([
+      "Report.pdf",
+      "Twin/inside-older.txt",
+      "filler-1.txt",
+      "filler-2.txt",
+      "filler-3.txt",
+      "same.txt",
+    ]);
+    for (const file of files) await expect(d.read(file.key)).resolves.toBeDefined();
+    expect((await d.stats("")).objects).toBe(6);
+    expect((await d.listKeys("", 100)).keys).not.toContain("Twin/inside-newer.txt");
+  });
+
+  it("refuses a page token it didn't hand out", async () => {
+    await expect(driver("/Work").list("", "https://graph.example/elsewhere")).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("finds an exact file name for SQL, and says when a size isn't known", async () => {
+    const work = driver("/Work");
+    const exact = await work.inventory("notes.txt", 1);
+    expect(exact.files.map((file) => [file.key, file.size])).toEqual([["notes.txt", "hello drive".length]]);
+    expect((await driver("/").inventory("Work/Sub/deep.csv", 1)).files.map((file) => file.key)).toEqual(["Work/Sub/deep.csv"]);
+    // A Google document has no size until it's exported: flagged, not passed off as empty.
+    const doc = (await work.inventory("Plan.pdf", 1)).files[0];
+    expect(doc).toMatchObject({ key: "Plan.pdf", size: 0, sizeUnknown: true });
+    // A folder named without its "/" is still that folder.
+    expect((await work.inventory("Sub", 1)).files.map((file) => file.key)).toEqual(["Sub/deep.csv"]);
+    expect((await work.inventory("missing.csv", 1)).files).toEqual([]);
   });
 
   it("walks folders for listKeys and stats", async () => {

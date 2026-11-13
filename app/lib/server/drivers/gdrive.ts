@@ -58,7 +58,7 @@ const PAGE = 1000;
 const CHUNK = 8 * 1024 * 1024;
 const FOLDER_TTL = 60_000;
 
-type Node = { id: string; name: string; mimeType: string; size?: string | null; modifiedTime?: string | null; md5Checksum?: string | null };
+export type Node = { id: string; name: string; mimeType: string; size?: string | null; modifiedTime?: string | null; md5Checksum?: string | null };
 
 /** "/", "/Photos", "Photos/2024/" → the canonical folder path, or null if it can't be one. */
 export function driveFolder(raw: string): string | null {
@@ -197,6 +197,46 @@ function explain(error: unknown, target: Target): StorageUserError {
   console.error("[gdrive] unexpected error", status, reason || (error as Error)?.message);
   return new StorageUserError("Google Drive returned an unexpected error. Try again.", 502);
 }
+
+/** One listed entry of a folder: its name in paths, and the Drive item it stands for. */
+export type FolderEntry = { name: string; folder: boolean; exported: boolean; node: Node };
+
+/**
+ * A folder's entries from all its items, oldest first — the same choices the path lookups
+ * make, so a listed path always opens the listed item:
+ * - a folder name: the oldest folder;
+ * - a file name: the oldest stored file;
+ * - "Name.pdf" for a Google document: only if no stored file has that name, then the oldest.
+ * Names a path can't express (with "/", or "." and "..") are left out.
+ */
+export function pickEntries(nodes: Node[]): FolderEntry[] {
+  const folders = new Map<string, FolderEntry>();
+  const stored = new Map<string, FolderEntry>();
+  const exported = new Map<string, FolderEntry>();
+  for (const node of nodes) {
+    const name = driveListedName(node);
+    if (!name) continue;
+    if (node.mimeType === FOLDER) {
+      if (!folders.has(name)) folders.set(name, { name, folder: true, exported: false, node });
+    } else if (NATIVE.test(node.mimeType)) {
+      if (!exported.has(name)) exported.set(name, { name, folder: false, exported: true, node });
+    } else if (!stored.has(name)) stored.set(name, { name, folder: false, exported: false, node });
+  }
+  for (const name of stored.keys()) exported.delete(name);
+  return [...folders.values(), ...stored.values(), ...exported.values()];
+}
+
+const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+/** Folders first, then names in natural order: how a listing reads. */
+const sortForDisplay = (entries: FolderEntry[]) =>
+  [...entries].sort((a, b) => Number(b.folder) - Number(a.folder) || collator.compare(a.name, b.name) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+
+/** A folder is listed from at most this many Drive pages: 100,000 entries. */
+const FOLDER_PAGES = 100;
+/** How long a read folder serves the pages after its first. */
+const LISTING_TTL = 60_000;
+/** Recent whole-folder listings, by account and folder ID, for paging through them. */
+const listings = new Map<string, { entries: FolderEntry[]; expires: number }>();
 
 /** Folder IDs by absolute path, per account: resolving "a/b/c" needn't ask three times every call. */
 const folderIds = new Map<string, { id: string; expires: number }>();
@@ -343,42 +383,54 @@ export function googleDriveDriver(target: Target): StorageDriver {
     return parentId ? { node: { id, name: parts[parts.length - 1], mimeType: FOLDER }, parentId, exported: false } : null;
   }
 
-  const fileOf = (key: string, node: Node): Listing["files"][number] => ({
+  /** A listing entry. A Google document's size isn't known until it's exported, so it says so. */
+  const fileOf = (key: string, node: Node, exported: boolean): Listing["files"][number] => ({
     key,
-    size: Number(node.size ?? 0) || 0,
+    size: exported ? 0 : Number(node.size ?? 0) || 0,
+    ...(exported ? { sizeUnknown: true } : {}),
     lastModified: node.modifiedTime ? new Date(node.modifiedTime).toISOString() : null,
-    etag: node.md5Checksum ?? null,
+    etag: exported ? null : (node.md5Checksum ?? null),
     storageClass: null,
   });
 
-  /** One page of a folder, as keys below `prefix`. Duplicate names keep their first entry. */
-  async function page(id: string, prefix: string, token?: string) {
-    const data = await call(() =>
-      drive.files.list({
-        q: `${driveQuote(id)} in parents and trashed = false`,
-        fields: `nextPageToken,files(${FIELDS})`,
-        orderBy: "folder,name_natural,createdTime",
-        pageSize: PAGE,
-        pageToken: token,
-        spaces: "drive",
-      }),
-    );
+  /**
+   * Every entry of one folder, up to `maxPages` Drive pages. Duplicates are settled over the
+   * whole folder, not page by page, so what's listed is always what a path opens.
+   */
+  async function readFolder(id: string, maxPages: number): Promise<{ entries: FolderEntry[]; pages: number; truncated: boolean }> {
+    const nodes: Node[] = [];
+    let token: string | undefined;
+    let pages = 0;
+    do {
+      if (pages >= maxPages) return { entries: pickEntries(nodes), pages, truncated: true };
+      const data = await call(() =>
+        drive.files.list({
+          q: `${driveQuote(id)} in parents and trashed = false`,
+          fields: `nextPageToken,files(${FIELDS})`,
+          // Oldest first, the order the path lookups use to choose between duplicates.
+          orderBy: "createdTime",
+          pageSize: PAGE,
+          pageToken: token,
+          spaces: "drive",
+        }),
+      );
+      pages += 1;
+      nodes.push(...((data.files ?? []) as Node[]));
+      token = data.nextPageToken ?? undefined;
+    } while (token);
+    return { entries: pickEntries(nodes), pages, truncated: false };
+  }
+
+  /** A folder's entries as keys below `prefix`. */
+  const keyed = (entries: FolderEntry[], prefix: string) => {
     const folders: { key: string; id: string }[] = [];
     const files: Listing["files"] = [];
-    const seen = new Set<string>();
-    // Stored files first, so "Report.pdf" the file wins over "Report" the Google Doc.
-    const nodes = ((data.files ?? []) as Node[]).sort((a, b) => Number(NATIVE.test(a.mimeType) && a.mimeType !== FOLDER) - Number(NATIVE.test(b.mimeType) && b.mimeType !== FOLDER));
-    for (const node of nodes) {
-      const name = driveListedName(node);
-      if (!name) continue;
-      const key = prefix + name + (node.mimeType === FOLDER ? "/" : "");
-      if (seen.has(key)) continue;
-      seen.add(key);
-      if (node.mimeType === FOLDER) folders.push({ key, id: node.id });
-      else files.push(fileOf(key, node));
+    for (const entry of entries) {
+      if (entry.folder) folders.push({ key: `${prefix}${entry.name}/`, id: entry.node.id });
+      else files.push(fileOf(prefix + entry.name, entry.node, entry.exported));
     }
-    return { folders, files, next: data.nextPageToken ?? undefined };
-  }
+    return { folders, files };
+  };
 
   /** Walks the tree under a folder, breadth first. Returns whether the page cap cut it short. */
   async function walk(
@@ -386,21 +438,20 @@ export function googleDriveDriver(target: Target): StorageDriver {
     visit: (found: { folders: { key: string; id: string }[]; files: Listing["files"] }) => boolean | void,
     maxPages = Infinity,
   ): Promise<boolean> {
-    const start = await folderId(partsOf(prefix));
+    // "Reports" and "Reports/" are the same folder; keys below it always follow a "/".
+    const base = prefix && !prefix.endsWith("/") ? `${prefix}/` : prefix;
+    const start = await folderId(partsOf(base));
     if (!start) return false;
-    const queue: { id: string; prefix: string }[] = [{ id: start, prefix }];
+    const queue: { id: string; prefix: string }[] = [{ id: start, prefix: base }];
     let pages = 0;
     while (queue.length) {
       const folder = queue.shift()!;
-      let token: string | undefined;
-      do {
-        if (pages >= maxPages) return true;
-        const found = await page(folder.id, folder.prefix, token);
-        pages += 1;
-        for (const child of found.folders) queue.push({ id: child.id, prefix: child.key });
-        if (visit(found) === false) return true;
-        token = found.next;
-      } while (token);
+      if (pages >= maxPages) return true;
+      const read = await readFolder(folder.id, maxPages - pages);
+      pages += read.pages;
+      const found = keyed(read.entries, folder.prefix);
+      for (const child of found.folders) queue.push({ id: child.id, prefix: child.key });
+      if (visit(found) === false || read.truncated) return true;
     }
     return false;
   }
@@ -512,16 +563,33 @@ export function googleDriveDriver(target: Target): StorageDriver {
         return {};
       }),
 
+    // The folder is read whole (so duplicates are settled the same on every page), then
+    // handed out a page at a time. The first page always reads afresh; later pages come
+    // from that read, so paging through doesn't read the folder again for every page.
     list: (prefix, token) =>
       run(async () => {
+        const offset = token === undefined ? 0 : /^o:(\d{1,9})$/.exec(token) ? Number(token.slice(2)) : NaN;
+        if (!Number.isSafeInteger(offset)) throw new StorageUserError("That page of the listing is no longer valid. Refresh.", 400);
         const id = await folderId(partsOf(prefix));
         if (!id) {
           // A folder that's gone reads as empty, as a prefix with nothing under it does on S3.
           if (prefix) return { folders: [], files: [] };
           throw noFolder();
         }
-        const found = await page(id, prefix, token);
-        return { folders: found.folders.map((folder) => folder.key), files: found.files, nextToken: found.next };
+        const cacheKey = `${account}\n${id}`;
+        const cached = offset > 0 ? listings.get(cacheKey) : undefined;
+        let entries: FolderEntry[];
+        if (cached && cached.expires > Date.now()) entries = cached.entries;
+        else {
+          entries = sortForDisplay((await readFolder(id, FOLDER_PAGES)).entries);
+          listings.delete(cacheKey);
+          listings.set(cacheKey, { entries, expires: Date.now() + LISTING_TTL });
+          if (listings.size > 50) listings.delete(listings.keys().next().value!);
+        }
+        const slice = entries.slice(offset, offset + PAGE);
+        const { folders, files } = keyed(slice, prefix);
+        const next = offset + PAGE < entries.length ? `o:${offset + PAGE}` : undefined;
+        return { folders: folders.map((folder) => folder.key), files, nextToken: next };
       }),
 
     // Files, plus each empty folder as its own "marker" — a non-empty folder is implied
@@ -571,6 +639,11 @@ export function googleDriveDriver(target: Target): StorageDriver {
 
     inventory: (prefix, maxPages = 100) =>
       run(async () => {
+        // An exact file name (SQL's FROM 'sales.csv') is that file; otherwise it's a folder.
+        if (prefix && !prefix.endsWith("/")) {
+          const found = await fileAt(prefix);
+          if (found) return { files: [fileOf(prefix, found.node, found.exported)], truncated: false };
+        }
         const files: Listing["files"] = [];
         const truncated = await walk(
           prefix,

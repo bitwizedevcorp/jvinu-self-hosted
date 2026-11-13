@@ -27,7 +27,7 @@ export type ZipPlan = {
   userId: string;
   /** The archive's file name, ".zip" included. */
   name: string;
-  files: { key: string; path: string; size: number; modified: string | null; storageClass: string | null }[];
+  files: { key: string; path: string; size: number; sizeUnknown?: boolean; modified: string | null; storageClass: string | null }[];
   bytes: number;
   /** Bytes per storage class, for the cost estimate. */
   byClass: { storageClass: string | null; bytes: number }[];
@@ -103,7 +103,14 @@ export async function planZip(input: {
   if (files.size > ZIP_MAX_FILES) throw tooMany();
 
   const planned = [...files.values()]
-    .map((file) => ({ key: file.key, path: cleanPath(file.key.slice(base.length)), size: file.size, modified: file.lastModified, storageClass: file.storageClass }))
+    .map((file) => ({
+      key: file.key,
+      path: cleanPath(file.key.slice(base.length)),
+      size: file.size,
+      ...(file.sizeUnknown ? { sizeUnknown: true } : {}),
+      modified: file.lastModified,
+      storageClass: file.storageClass,
+    }))
     .filter((file) => file.path)
     .sort((a, b) => a.path.localeCompare(b.path));
   const bytes = planned.reduce((sum, file) => sum + file.size, 0);
@@ -132,6 +139,7 @@ export function zipEntries(plan: ZipPlan, driver: StorageDriver): ZipEntry[] {
   return plan.files.map((file) => ({
     name: file.path,
     size: file.size,
+    sizeUnknown: file.sizeUnknown,
     modified: file.modified ? new Date(file.modified) : new Date(),
     method: methodFor(file.path),
     open: async () => (await driver.read(file.key)).stream,

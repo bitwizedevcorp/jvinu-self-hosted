@@ -43,6 +43,15 @@ describe("zip plans", () => {
     expect(result.name).toBe("photos.zip");
   });
 
+  it("keep a size the listing couldn't give apart from a real empty file", async () => {
+    const result = await plan(
+      [{ ...file("docs/Plan.pdf"), size: 0, sizeUnknown: true }, { ...file("docs/empty.txt"), size: 0 }],
+      [{ key: "docs/", kind: "folder" }],
+    );
+    expect(result.files.find((entry) => entry.path === "docs/Plan.pdf")?.sizeUnknown).toBe(true);
+    expect(result.files.find((entry) => entry.path === "docs/empty.txt")?.sizeUnknown).toBeUndefined();
+  });
+
   it("refuse more than 10,000 files", async () => {
     const many = Array.from({ length: ZIP_MAX_FILES + 1 }, (_, i) => file(`big/${i}.txt`, 1));
     await expect(plan(many, [{ key: "big/", kind: "folder" }])).rejects.toMatchObject({ status: 413, message: expect.stringContaining("10,000") });

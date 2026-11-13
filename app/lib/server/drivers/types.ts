@@ -14,6 +14,11 @@ export type Listing = {
   files: {
     key: string;
     size: number;
+    /**
+     * Set when the service can't say how big the file is until it's read (a Google document,
+     * exported on request); `size` is 0 then. Never set for a real empty file.
+     */
+    sizeUnknown?: boolean;
     lastModified: string | null;
     etag: string | null;
     storageClass: string | null;
