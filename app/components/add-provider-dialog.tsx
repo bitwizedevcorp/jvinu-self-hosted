@@ -127,6 +127,40 @@ function allowDropboxAccess(values: Record<string, string>): Record<string, stri
   return { codeVerifier: verifier, code: "" };
 }
 
+/** Where Google sends the browser back; the page there shows the code to paste. */
+const DRIVE_CALLBACK_PATH = "/connect/google-drive";
+
+/**
+ * Google's authorization-code flow with PKCE. Google sends the browser back to a page on
+ * this server that shows the code; it's pasted here, and Connect trades it for a refresh
+ * token. The verifier stays in this form, so a code is useless to anyone who only sees it.
+ */
+function signInWithGoogle(values: Record<string, string>): Record<string, string> | string {
+  const clientId = values.clientId?.trim();
+  if (!clientId) return "Enter the client ID first.";
+  // Opened inside the click, before any await: pop-up blockers allow only that.
+  const tab = window.open("", "_blank");
+  if (!tab) return "Your browser blocked the Google tab — allow pop-ups for this site and try again.";
+  tab.opener = null;
+  const verifier = base64url(crypto.getRandomValues(new Uint8Array(48)));
+  void crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)).then((hash) => {
+    const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    url.search = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: window.location.origin + DRIVE_CALLBACK_PATH,
+      response_type: "code",
+      scope: "https://www.googleapis.com/auth/drive",
+      // A refresh token, every time: without consent Google only sends one the first time.
+      access_type: "offline",
+      prompt: "consent",
+      code_challenge: base64url(new Uint8Array(hash)),
+      code_challenge_method: "S256",
+    }).toString();
+    tab.location.href = url.href;
+  });
+  return { codeVerifier: verifier, code: "" };
+}
+
 /**
  * Microsoft's device-code flow: the server asks Microsoft for a short code, the user types
  * it at microsoft.com, and Connect redeems it — so no callback URL and no client secret.
@@ -149,6 +183,40 @@ async function signInWithMicrosoft(values: Record<string, string>): Promise<Reco
 }
 
 const SCHEMAS: Record<ConnectableKind, Schema> = {
+  gdrive: {
+    bucketLabel: "Folder",
+    bucketPlaceholder: "/",
+    bucketDefault: "/",
+    bucketHint: "/ for the whole Drive, or a folder such as /Documents.",
+    fields: [
+      {
+        id: "clientId",
+        label: "Client ID",
+        placeholder: "123456789012-abc….apps.googleusercontent.com",
+        mono: true,
+        hint: "In Google Cloud: enable the Google Drive API, then under Credentials create an OAuth client of type Web application, with this server's /connect/google-drive address as an authorised redirect URI.",
+      },
+      { id: "clientSecret", label: "Client secret", kind: "secret" },
+      { id: "codeVerifier", label: "PKCE verifier", kind: "hidden", required: false },
+      {
+        id: "code",
+        label: "Sign-in code",
+        placeholder: "Paste the code shown after you sign in",
+        mono: true,
+        hint: "Approve in the Google tab; it comes back to a page showing a code. Paste it here. Each code works once.",
+        action: { label: "Sign in with Google", run: signInWithGoogle },
+        needs: { field: "codeVerifier", message: "Click “Sign in with Google” first." },
+      },
+    ],
+    security: (
+      <>
+        The client ID and secret are sealed on this server with a refresh token — never your Google password. Remove access any
+        time at myaccount.google.com → Security → Third-party apps with account access. Files are served through this app rather
+        than as Drive links, and deletes go to the Drive bin. Google Docs, Sheets and Slides open as PDFs.
+      </>
+    ),
+  },
+
   onedrive: {
     bucketLabel: "Folder",
     bucketPlaceholder: "/",
@@ -625,7 +693,7 @@ export function AddProviderDialog({
               Connect a storage provider
             </h2>
             <p className="mt-0.5 text-[13px] text-ink-muted">
-              AWS, Azure, Google, Oracle, Cloudflare R2, Wasabi, Backblaze B2, DigitalOcean, Scaleway, Storj, MinIO, Dropbox or OneDrive.{" "}
+              AWS, Azure, Google, Oracle, Cloudflare R2, Wasabi, Backblaze B2, DigitalOcean, Scaleway, Storj, MinIO, Dropbox, OneDrive or Google Drive.{" "}
               <a href={`${WEBSITE_URL}/guide`} target="_blank" rel="noreferrer" className="font-medium text-accent-strong hover:underline">
                 Which one?
               </a>

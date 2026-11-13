@@ -125,13 +125,15 @@ function whereIs(connection: { endpoint?: string; region: string; presetId: stri
         ? "on Dropbox"
         : connection.presetId === "onedrive"
           ? "on OneDrive"
-          : "";
+          : connection.presetId === "gdrive"
+            ? "on Google Drive"
+            : "";
 }
 
 function targetOf(connection: { endpoint?: string; region: string; presetId: string }): string {
   if (connection.endpoint) return new URL(connection.endpoint).host;
   if (connection.region) return connection.region;
-  return connection.presetId === "azure" ? "Azure" : connection.presetId === "gcs" ? "Google Cloud" : connection.presetId === "dropbox" ? "Dropbox" : connection.presetId === "onedrive" ? "OneDrive" : "cloud";
+  return connection.presetId === "azure" ? "Azure" : connection.presetId === "gcs" ? "Google Cloud" : connection.presetId === "dropbox" ? "Dropbox" : connection.presetId === "onedrive" ? "OneDrive" : connection.presetId === "gdrive" ? "Google Drive" : "cloud";
 }
 
 /** ?bucket=<connection>/<bucket>&prefix=a/b/  or  ?view=starred */

@@ -32,7 +32,7 @@ export function ConnectionSettingsDialog({
   const otherBucket = connections.find((item) => item.id !== connection.id && item.settings.shareTarget);
   const [sharePrefix, setSharePrefix] = useState(shareTarget?.prefix ?? "jvinu-shares/");
   const [publicBase, setPublicBase] = useState(connection.settings.publicBaseUrl ?? "");
-  const place = connection.presetId === "azure" ? "container" : connection.presetId === "dropbox" || connection.presetId === "onedrive" ? "folder" : "bucket";
+  const place = connection.presetId === "azure" ? "container" : connection.presetId === "dropbox" || connection.presetId === "onedrive" || connection.presetId === "gdrive" ? "folder" : "bucket";
 
   useEffect(() => {
     ref.current?.showModal();

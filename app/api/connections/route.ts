@@ -20,6 +20,8 @@ import { driverFor } from "@/app/lib/server/drivers";
 import { checkEncryptedBucket, MIN_PASSPHRASE } from "@/app/lib/server/drivers/crypt";
 import { dataKeyOf, deriveKey } from "@/app/lib/server/crypt";
 import { dropboxAccount, dropboxFolder, exchangeDropboxCode } from "@/app/lib/server/drivers/dropbox";
+import { driveFolder, exchangeDriveCode, googleDriveAccount } from "@/app/lib/server/drivers/gdrive";
+import { driveRedirectUri } from "@/app/lib/server/gdrive-sign-in";
 import { oneDriveAccount, oneDriveFolder, oneDriveTenant, redeemOneDriveSignIn } from "@/app/lib/server/drivers/onedrive";
 import { cleanEndpoint, fail, handle, validBucketName, readJson, tooLarge } from "@/app/lib/server/http";
 import { openSignIn } from "@/app/lib/server/onedrive-sign-in";
@@ -41,7 +43,7 @@ export async function GET(request: Request) {
   }
 }
 
-const KINDS: ProviderKind[] = ["s3", "azure", "gcs", "oci", "dropbox", "onedrive"];
+const KINDS: ProviderKind[] = ["s3", "azure", "gcs", "oci", "dropbox", "onedrive", "gdrive"];
 const isKind = (value: unknown): value is ProviderKind => KINDS.includes(value as ProviderKind);
 
 const str = (value: unknown, max = 512) => (typeof value === "string" ? value.trim().slice(0, max) : "");
@@ -51,7 +53,7 @@ type Built =
       credentials: Credentials;
       region: string;
       endpoint?: string;
-      /** Dropbox: the one-time code to trade for a refresh token once the cheap checks pass. */
+      /** Dropbox, Google Drive: the one-time code to trade for a refresh token once the cheap checks pass. */
       link?: { code: string; verifier: string };
       /** OneDrive: the sealed device sign-in to redeem once the cheap checks pass. */
       signIn?: string;
@@ -159,6 +161,19 @@ function buildCredentials(kind: ProviderKind, body: Record<string, unknown>, end
       return { credentials: { kind: "dropbox", appKey, refreshToken: "" }, region: "", link: { code, verifier } };
     }
 
+    case "gdrive": {
+      const clientId = str(body.clientId, 256);
+      const clientSecret = str(body.clientSecret, 256);
+      const code = str(body.code, 1024);
+      const verifier = str(body.codeVerifier, 128);
+      if (!/^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/.test(clientId))
+        return { error: "The client ID ends in .apps.googleusercontent.com — copy it from the OAuth client in Google Cloud." };
+      if (!/^[\x21-\x7e]{8,256}$/.test(clientSecret)) return { error: "Paste the client secret of that OAuth client." };
+      if (!/^[A-Za-z0-9_.~-]{43,128}$/.test(verifier)) return { error: "Click “Sign in with Google” first, then paste the code it shows." };
+      if (!/^[A-Za-z0-9_/.~-]{8,1024}$/.test(code)) return { error: "Paste the code jvinu showed after you signed in with Google." };
+      return { credentials: { kind: "gdrive", clientId, clientSecret, refreshToken: "" }, region: "", link: { code, verifier } };
+    }
+
     case "onedrive": {
       const clientId = str(body.clientId, 64);
       const tenant = oneDriveTenant(str(body.tenant, 128));
@@ -187,20 +202,22 @@ export async function POST(request: Request) {
   const kind = body.presetId;
   if (!isKind(kind) && !isS3Compatible(kind)) return fail("That provider can't be connected yet.", 400);
   const name = str(body.name, 61);
-  // On Dropbox and OneDrive the "bucket" is a folder path, normalised to "/" or "/Folder/Sub".
-  const isFolderRoot = kind === "dropbox" || kind === "onedrive";
+  // On Dropbox, OneDrive and Google Drive the "bucket" is a folder path, normalised to "/" or "/Folder/Sub".
+  const isFolderRoot = kind === "dropbox" || kind === "onedrive" || kind === "gdrive";
   const bucket =
     kind === "dropbox"
       ? (dropboxFolder(str(body.bucket, 1024)) ?? "")
       : kind === "onedrive"
         ? (oneDriveFolder(str(body.bucket, 1024)) ?? "")
-        : str(body.bucket, 256);
+        : kind === "gdrive"
+          ? (driveFolder(str(body.bucket, 1024)) ?? "")
+          : str(body.bucket, 256);
   const endpoint = isFolderRoot ? undefined : cleanEndpoint(body.endpoint);
 
   if (!name || name.length > 60) return fail("Give the connection a name (up to 60 characters).", 400);
   if (isFolderRoot) {
     if (!bucket)
-      return fail(`Enter a folder path such as /Photos, or / for the whole ${kind === "dropbox" ? "Dropbox" : "OneDrive"}.`, 400);
+      return fail(`Enter a folder path such as /Photos, or / for the whole ${kind === "dropbox" ? "Dropbox" : kind === "gdrive" ? "Google Drive" : "OneDrive"}.`, 400);
   } else if (isS3Compatible(kind) ? !S3_COMPATIBLE[kind].bucket.test(bucket) : !validBucketName(bucket, kind))
     return fail(kind === "azure" ? "That isn't a valid container name." : "That isn't a valid bucket name.", 400);
   if (endpoint === null)
@@ -228,6 +245,17 @@ export async function POST(request: Request) {
     if (built.link && credentials.kind === "dropbox") {
       const refreshToken = await exchangeDropboxCode(credentials.appKey, built.link.code, built.link.verifier);
       const account = await dropboxAccount({ appKey: credentials.appKey, refreshToken });
+      credentials = { ...credentials, refreshToken, account: account ?? undefined };
+    }
+    if (built.link && credentials.kind === "gdrive") {
+      const refreshToken = await exchangeDriveCode({
+        clientId: credentials.clientId,
+        clientSecret: credentials.clientSecret,
+        code: built.link.code,
+        verifier: built.link.verifier,
+        redirectUri: driveRedirectUri(request),
+      });
+      const account = await googleDriveAccount({ ...credentials, refreshToken });
       credentials = { ...credentials, refreshToken, account: account ?? undefined };
     }
     if (built.signIn && credentials.kind === "onedrive") {

@@ -10,7 +10,7 @@ import type { DataPreview, LakeRoot, LakeTableInfo, TableChange } from "./data-t
 /** Mirrors PublicConnection on the server — no secrets ever reach the client. */
 export type RemoteConnection = {
   id: string;
-  presetId: "s3" | "azure" | "gcs" | "oci" | "r2" | "wasabi" | "b2" | "spaces" | "scaleway" | "storj" | "minio" | "dropbox" | "onedrive" | "garage";
+  presetId: "s3" | "azure" | "gcs" | "oci" | "r2" | "wasabi" | "b2" | "spaces" | "scaleway" | "storj" | "minio" | "dropbox" | "onedrive" | "gdrive" | "garage";
   name: string;
   bucket: string;
   region: string;
@@ -452,14 +452,15 @@ export const api = {
 
 export function bucketIdFor(connection: RemoteConnection): string {
   // A Dropbox or OneDrive root is a path that may hold ":" or "|", which node IDs use as separators.
-  const folderRoot = connection.presetId === "dropbox" || connection.presetId === "onedrive";
+  const folderRoot = connection.presetId === "dropbox" || connection.presetId === "onedrive" || connection.presetId === "gdrive";
   return `${connection.id}/${folderRoot ? connection.presetId : connection.bucket}`;
 }
 
 /** Dropbox and OneDrive roots are paths: show the service's name for the whole account, else the folder's. */
 function bucketNames(connection: RemoteConnection): { name: string; title: string } {
-  if (connection.presetId !== "dropbox" && connection.presetId !== "onedrive") return { name: connection.bucket, title: connection.bucket };
-  const whole = connection.presetId === "dropbox" ? "Dropbox" : "OneDrive";
+  if (connection.presetId !== "dropbox" && connection.presetId !== "onedrive" && connection.presetId !== "gdrive")
+    return { name: connection.bucket, title: connection.bucket };
+  const whole = connection.presetId === "dropbox" ? "Dropbox" : connection.presetId === "gdrive" ? "Google Drive" : "OneDrive";
   if (connection.bucket === "/") return { name: whole, title: whole };
   return { name: connection.bucket.split("/").pop() ?? connection.bucket, title: connection.bucket };
 }

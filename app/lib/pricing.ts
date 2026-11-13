@@ -137,6 +137,7 @@ export const PRICE_SHEETS: Record<string, PriceSheet | "self-hosted" | "plan"> =
   garage: "self-hosted",
   dropbox: "plan",
   onedrive: "plan",
+  gdrive: "plan",
 };
 
 /** "Standard_IA", "Hot", "InfrequentAccess" → the keys used above. */

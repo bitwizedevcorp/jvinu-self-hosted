@@ -3,6 +3,7 @@ import { saveCredentials, storagePublicUrl, type StoredConnection } from "../con
 import { azureDriver } from "./azure";
 import { dropboxDriver } from "./dropbox";
 import { gcsDriver } from "./gcs";
+import { googleDriveDriver } from "./gdrive";
 import { ociDriver } from "./oci";
 import { oneDriveDriver } from "./onedrive";
 import { cryptDriver } from "./crypt";
@@ -157,6 +158,8 @@ export function cloudDriver(connection: DriverTarget): StorageDriver {
       });
     case "dropbox":
       return dropboxDriver({ root: bucket, appKey: c.appKey, refreshToken: c.refreshToken });
+    case "gdrive":
+      return googleDriveDriver({ root: bucket, clientId: c.clientId, clientSecret: c.clientSecret, refreshToken: c.refreshToken });
     case "onedrive": {
       const id = connection.id;
       return oneDriveDriver({

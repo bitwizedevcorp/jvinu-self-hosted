@@ -29,7 +29,7 @@ export function storagePublicUrl(): string | null {
   }
 }
 
-export type ProviderKind = "s3" | "azure" | "gcs" | "oci" | "dropbox" | "onedrive";
+export type ProviderKind = "s3" | "azure" | "gcs" | "oci" | "dropbox" | "onedrive" | "gdrive";
 /** What the user picked. S3-compatible clouds run on the S3 driver with their own endpoint. */
 export type PresetId = ProviderKind | "r2" | "wasabi" | "b2" | "spaces" | "scaleway" | "storj" | "minio" | "garage";
 
@@ -73,20 +73,32 @@ export type OneDriveCredentials = {
   /** The account's sign-in name, shown as the connection hint. */
   account?: string;
 };
+export type GoogleDriveCredentials = {
+  kind: "gdrive";
+  /** The user's own OAuth client ("Web application") in Google Cloud. */
+  clientId: string;
+  /** Google requires it for web clients, even with PKCE. Sealed like every other credential. */
+  clientSecret: string;
+  /** From the sign-in. Lasts until the user removes the app's access. */
+  refreshToken: string;
+  /** The account's email, shown as the connection hint. */
+  account?: string;
+};
 export type Credentials =
   | S3Credentials
   | AzureCredentials
   | GcsCredentials
   | OciCredentials
   | DropboxCredentials
-  | OneDriveCredentials;
+  | OneDriveCredentials
+  | GoogleDriveCredentials;
 
 /** What the server keeps. Never serialised to the client. */
 export type StoredConnection = {
   id: string;
   presetId: PresetId;
   name: string;
-  /** Bucket; container on Azure; root folder ("/", "/Photos") on Dropbox and OneDrive. */
+  /** Bucket; container on Azure; root folder ("/", "/Photos") on Dropbox, OneDrive and Google Drive. */
   bucket: string;
   region: string;
   /** Set for emulators and S3-compatible services; absent means the provider's public cloud. */
@@ -341,6 +353,8 @@ function hintFor(credentials: Credentials): string {
     case "dropbox":
       return credentials.account ?? `app ${mask(credentials.appKey)}`;
     case "onedrive":
+      return credentials.account ?? `app ${mask(credentials.clientId)}`;
+    case "gdrive":
       return credentials.account ?? `app ${mask(credentials.clientId)}`;
   }
 }

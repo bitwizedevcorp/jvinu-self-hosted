@@ -11,7 +11,7 @@
 
 A self-hosted, Finder-like interface for browsing, previewing, querying and managing files across object storage:
 Amazon S3, Azure Blob Storage, Google Cloud Storage, Oracle Cloud, Cloudflare R2, Wasabi,
-Backblaze B2, DigitalOcean Spaces, Dropbox and OneDrive — plus MinIO, local emulators such as Floci,
+Backblaze B2, DigitalOcean Spaces, Dropbox, OneDrive and Google Drive — plus MinIO, local emulators such as Floci,
 and an optional storage server of your own.
 
 Credentials are encrypted in jvinu's database and only ever used on the server; the browser
@@ -123,6 +123,7 @@ the connection's ID. They're never sent back to the page.
 | DigitalOcean Spaces | datacenter, access key, secret | presigned |
 | Dropbox | a folder (`/` for everything), app key, one-time access code | served through the app |
 | OneDrive | a folder (`/` for everything), application (client) ID, sign-in code | served through the app |
+| Google Drive | a folder (`/` for everything), OAuth client ID and secret, sign-in code | served through the app |
 
 R2, Wasabi, B2 and Spaces use the S3 API with an endpoint the server builds from the account
 ID or region. Share links last 15 minutes to 7 days, chosen per browser under **Copy Link**.
@@ -157,9 +158,33 @@ OneDrive recycle bin. Folder totals and analytics walk the tree folder by folder
 recursive listing), so deep trees take longer than on S3; OneNote notebooks and items shared from
 other drives aren't listed.
 
+### Google Drive
+
+"My Drive" of one Google account, through the Drive API. In [Google Cloud](https://console.cloud.google.com):
+
+1. Pick or create a project and enable the **Google Drive API** (APIs & Services → Library).
+2. Set up the **OAuth consent screen**. While its publishing status is **Testing**, add your Google
+   account under **Test users**; Google then expires its sign-ins after 7 days, so publish the app
+   (it can stay unverified for your own use) to keep a connection working.
+3. Under **Credentials**, create an **OAuth client ID** of type **Web application**, and add this
+   server's sign-in page as an **Authorized redirect URI**: the address you open jvinu at, followed by
+   `/connect/google-drive` (for example `https://storage.example.com/connect/google-drive`, or
+   `http://localhost:3000/connect/google-drive` on your own machine).
+
+In Connect Provider, enter the client ID and secret, click **Sign in with Google**, approve, and
+paste the code the page shows into **Sign-in code**, then click **Connect**. It's the
+authorization-code flow with PKCE: the code is useless without the verifier, which never leaves
+the form. The app asks for the `drive` scope. The server keeps, sealed, only the client ID,
+secret and a refresh token.
+
+Google Docs, Sheets, Slides and Drawings are listed with `.pdf` added and open as a PDF export.
+Deleted items go to the Drive bin. Two things Drive allows that paths can't show are left out:
+names containing `/`, and a second file of the same name in the same folder (the oldest is shown).
+Folder totals walk the tree folder by folder; shared drives and "Shared with me" aren't listed.
+
 ### Testing with Floci
 
-Every provider except Dropbox and OneDrive has **Use Floci defaults** in the connect dialog. Start the
+Every provider except Dropbox, OneDrive and Google Drive has **Use Floci defaults** in the connect dialog. Start the
 emulators with `docker compose --profile floci up -d` (or `floci start`, `floci az start`,
 `floci gcp start`, `floci oci start`); the bucket must already exist. Floci doesn't verify keys
 or signatures, so credential errors can only be tested against the real clouds.

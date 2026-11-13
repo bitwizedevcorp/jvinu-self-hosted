@@ -334,6 +334,13 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     mark: { label: "OD", from: "#28a8ea", to: "#0364b8" },
   },
   {
+    id: "gdrive",
+    name: "Google Drive",
+    region: "",
+    accessKeyPlaceholder: "Client ID",
+    mark: { label: "GD", from: "#34a853", to: "#1a73e8" },
+  },
+  {
     id: "scaleway",
     name: "Scaleway Object Storage",
     region: "fr-par",
@@ -357,7 +364,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 ];
 
 /** Providers with a working connector; the rest are listed as coming soon. */
-export const CONNECTABLE = ["s3", "azure", "gcs", "oci", "r2", "wasabi", "b2", "spaces", "scaleway", "storj", "minio", "dropbox", "onedrive"] as const;
+export const CONNECTABLE = ["s3", "azure", "gcs", "oci", "r2", "wasabi", "b2", "spaces", "scaleway", "storj", "minio", "dropbox", "onedrive", "gdrive"] as const;
 export type ConnectableKind = (typeof CONNECTABLE)[number];
 export const isConnectable = (id: string): id is ConnectableKind => (CONNECTABLE as readonly string[]).includes(id);
 
