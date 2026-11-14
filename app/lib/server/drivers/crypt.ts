@@ -64,19 +64,16 @@ export function cryptDriver(inner: StorageDriver, key: Uint8Array): StorageDrive
       return { folders: page.folders, files: mapFiles(page.files), nextToken: page.nextToken };
     },
 
-    // Same prefix, so "a" still matches "a/…" and "a.txt": every stored key starts with
-    // its app key. The filter drops the rare stored key that matched only on its suffix.
+    // A file is stored under its key plus the suffix.
+    findFile: async (key) => {
+      if (!key || isFolderKey(key)) return null;
+      const found = await inner.findFile(stored(key));
+      return found ? mapFiles([found])[0] ?? null : null;
+    },
+
     listKeys: async (prefix, max) => {
-      const mine = (keys: string[]) => keys.flatMap((key) => shown(key) ?? []).filter((key) => key.startsWith(prefix));
       const { keys, truncated } = await inner.listKeys(prefix, max);
-      const found = mine(keys);
-      // A file's own key sorts after siblings such as "a.txt (1)" once ".bin" is added, so a
-      // short listing could miss it; callers checking "is this name taken" need it first.
-      if (prefix && !isFolderKey(prefix) && !found.includes(prefix)) {
-        const exact = await inner.listKeys(stored(prefix), 1);
-        if (exact.keys[0] === stored(prefix)) return { keys: [prefix, ...found].slice(0, max), truncated: truncated || found.length >= max };
-      }
-      return { keys: found, truncated };
+      return { keys: keys.flatMap((key) => shown(key) ?? []), truncated };
     },
 
     inventory: async (prefix, maxPages) => {

@@ -1,8 +1,7 @@
 import "server-only";
-import { forgetConnectionActivity } from "./activity";
+import { removeConnection } from "./remove-connection";
 import type { DiskStatus } from "./bundled-storage";
 import {
-  deleteConnection,
   insertConnection,
   managedRow,
   nameTaken,
@@ -14,11 +13,8 @@ import {
 import { openWith, sealWith } from "./crypto";
 import { db } from "./db";
 import { driverFor } from "./drivers";
-import { forgetConnectionNotes } from "./notes";
 import { S3_COMPATIBLE } from "./s3-compatible";
 import { sellerConfig } from "./store/seller";
-import { forgetConnectionLinks } from "./shares";
-import { forgetConnectionItems } from "./user-items";
 import { DEFAULT_BLOCK_PRICE_CENTS, MAX_BLOCKS, type Billing, type PlanStatus, type PlanView } from "../storage-plan";
 
 /**
@@ -184,7 +180,7 @@ async function applyOrder(order: SellerOrder) {
   const row = await managedRow("cloud-storage");
   if (order.status === "deleted" || (!order.bucket && order.status !== "pending")) {
     if (order.status === "deleted") {
-      if (row) await removeConnection(row.id);
+      if (row) await removePlanConnection(row.id);
       await saveOrder(null);
     }
     return;
@@ -240,12 +236,8 @@ function targetOf(
   };
 }
 
-async function removeConnection(id: string) {
-  await deleteConnection(id);
-  await forgetConnectionItems(id);
-  await forgetConnectionNotes(id);
-  await forgetConnectionLinks(id);
-  await forgetConnectionActivity(id);
+async function removePlanConnection(id: string) {
+  await removeConnection(id);
   console.info("[storage-plan] the bucket was deleted by the storage service; removed “Cloud storage”");
 }
 

@@ -24,6 +24,7 @@ import {
   TableIcon,
 } from "./icons";
 import { LakeTableSummary } from "./lake-table";
+import { isFolderRoot, placeLabel, profileOf } from "../lib/providers";
 
 type PreviewType = "image" | "video" | "audio" | "pdf" | "text";
 
@@ -282,7 +283,7 @@ export function DetailPanel({
   const isFolder = node.kind === "folder";
   const key = keyOf(node);
   const uri =
-    connection?.presetId === "dropbox" || connection?.presetId === "onedrive"
+    connection && isFolderRoot(connection.presetId)
       ? `${connection.bucket === "/" ? "" : connection.bucket}/${key}`
       : `s3://${bucket.name}/${key}`;
   const previewType = isFolder ? null : previewTypeOf(node.name);
@@ -295,7 +296,7 @@ export function DetailPanel({
   // Behind a CDN or custom domain: the base the user set, plus this key (never for ciphertext).
   const publicBase = connection && !connection.encrypted ? connection.settings.publicBaseUrl : undefined;
   const publicUrl = !isFolder && publicBase ? publicUrlFor(publicBase, key) : null;
-  const bucketLabel = connection?.presetId === "azure" ? "Container" : connection?.presetId === "dropbox" || connection?.presetId === "onedrive" ? "Folder" : "Bucket";
+  const bucketLabel = placeLabel(connection?.presetId ?? "s3");
 
   // Images and media play straight from the provider through a short-lived signed URL
   // (cached a few minutes — well inside the shortest link lifetime).
@@ -680,7 +681,7 @@ export function DetailPanel({
         )}
 
         <Group title="Information">
-          <Row label="Key" mono onCopy={() => copy(uri, connection?.presetId === "dropbox" ? "Dropbox path" : connection?.presetId === "onedrive" ? "OneDrive path" : "S3 URI")} title={uri}>
+          <Row label="Key" mono onCopy={() => copy(uri, profileOf(connection?.presetId ?? "s3")?.pathLabel ?? "S3 URI")} title={uri}>
             {key}
           </Row>
           {publicUrl ? (

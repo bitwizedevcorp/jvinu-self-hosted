@@ -1,3 +1,4 @@
+import { profileOf, type PresetId } from "./providers";
 /**
  * Storage list prices, for a monthly estimate. Storage only: requests, egress, retrieval
  * fees and minimum-duration charges aren't included, and regions differ — so the result is
@@ -38,7 +39,7 @@ export type PriceSheet = {
 
 const TB = 1000; // the per-TB prices below are quoted per 1,000 GB
 
-export const PRICE_SHEETS: Record<string, PriceSheet | "self-hosted" | "plan"> = {
+export const PRICE_SHEETS: Record<PresetId, PriceSheet | "self-hosted" | "plan"> = {
   s3: {
     source: "aws.amazon.com/s3/pricing",
     region: "US East (N. Virginia)",
@@ -137,6 +138,7 @@ export const PRICE_SHEETS: Record<string, PriceSheet | "self-hosted" | "plan"> =
   garage: "self-hosted",
   dropbox: "plan",
   onedrive: "plan",
+  gdrive: "plan",
 };
 
 /** "Standard_IA", "Hot", "InfrequentAccess" → the keys used above. */
@@ -168,10 +170,8 @@ export function estimateCost(
     return { kind: "estimate", monthly: usd, lines: [{ label: "All storage", gb: totalGB, rate: customRate, usd }], sheet: null, custom: true };
   }
 
-  const sheet = PRICE_SHEETS[presetId];
-  if (sheet === "self-hosted" || sheet === "plan") return { kind: sheet };
-  // A custom S3 endpoint (MinIO, an emulator, another service) has no list price.
-  if (!sheet || (presetId === "s3" && endpoint)) return { kind: "unknown" };
+  const sheet = sheetFor(presetId, endpoint);
+  if (typeof sheet === "string") return { kind: sheet };
 
   const byClass = new Map<string, number>();
   for (const item of usage) {
@@ -212,9 +212,12 @@ export type DownloadCost =
     }
   | { kind: "self-hosted" | "plan" | "unknown" };
 
-/** The sheet for a connection, or why there isn't one. */
-function sheetFor(presetId: string, endpoint: string | undefined): PriceSheet | "self-hosted" | "plan" | "unknown" {
-  const sheet = PRICE_SHEETS[presetId];
+/**
+ * The sheet for a connection, or why there isn't one: the one place that knows a custom S3
+ * endpoint (MinIO, an emulator, another service) has no list price.
+ */
+export function sheetFor(presetId: string, endpoint: string | undefined): PriceSheet | "self-hosted" | "plan" | "unknown" {
+  const sheet = profileOf(presetId) ? PRICE_SHEETS[presetId as PresetId] : undefined;
   if (sheet === "self-hosted" || sheet === "plan") return sheet;
   if (!sheet || (presetId === "s3" && endpoint)) return "unknown";
   return sheet;
@@ -262,7 +265,7 @@ export function coolerClass(presetId: string, endpoint: string | undefined): { s
  * custom endpoints too, even though their prices are unknown.
  */
 export function restoreDelay(presetId: string, _endpoint: string | undefined, storageClass: string | null | undefined): string | null {
-  const sheet = PRICE_SHEETS[presetId];
+  const sheet = profileOf(presetId) ? PRICE_SHEETS[presetId as PresetId] : undefined;
   return typeof sheet === "object" ? (sheet.restore?.[normaliseClass(storageClass)] ?? null) : null;
 }
 

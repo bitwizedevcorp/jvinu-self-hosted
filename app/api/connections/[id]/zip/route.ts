@@ -1,10 +1,8 @@
 import { actorOf, recordActivity } from "@/app/lib/server/activity";
 import { driverFor } from "@/app/lib/server/drivers";
-import { StorageUserError } from "@/app/lib/server/drivers/types";
 import { guardConnection } from "@/app/lib/server/guard";
 import { fail, handle, readJson, tooLarge } from "@/app/lib/server/http";
-import { zipLength, zipStream } from "@/app/lib/server/zip";
-import { issueTicket, planZip, redeemTicket, zipEntries, type ZipItem, type ZipPlan } from "@/app/lib/server/zip-plan";
+import { issueTicket, planZip, redeemTicket, zipDownload, type ZipItem, type ZipPlan } from "@/app/lib/server/zip-plan";
 
 /** A ticket can be fetched again (a retried download); the history has it once. */
 const recorded = new WeakSet<ZipPlan>();
@@ -75,15 +73,7 @@ export async function GET(request: Request, ctx: RouteContext<"/api/connections/
       });
     }
 
-    const entries = zipEntries(plan, driverFor(guarded.connection));
-    // With nothing compressed and nothing that might be left out, the length is known up
-    // front, so the browser can show progress and time left.
-    const length = plan.archived === 0 ? zipLength(entries) : null;
-    const stream = zipStream(entries, {
-      exactSizes: length !== null,
-      // Gone since the plan was made, or archived and not restored: left out, and named in a note.
-      skippable: (error) => (error instanceof StorageUserError && (error.status === 404 || error.status === 409) ? error.message : null),
-    });
+    const { stream, length } = zipDownload(plan, driverFor(guarded.connection));
     const headers = new Headers({
       "content-type": "application/zip",
       "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(plan.name)}`,

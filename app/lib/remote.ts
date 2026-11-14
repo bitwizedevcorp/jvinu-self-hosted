@@ -6,11 +6,12 @@ import type { XrayReport } from "./xray";
 export type DeviceSession = { id: string; current: boolean; device: string; createdAt: string; expiresAt: string };
 import { describeFile, type Bucket, type Provider, type StorageNode } from "./storage";
 import type { DataPreview, LakeRoot, LakeTableInfo, TableChange } from "./data-types";
+import { isFolderRoot, PROVIDERS, type PresetId } from "./providers";
 
 /** Mirrors PublicConnection on the server — no secrets ever reach the client. */
 export type RemoteConnection = {
   id: string;
-  presetId: "s3" | "azure" | "gcs" | "oci" | "r2" | "wasabi" | "b2" | "spaces" | "scaleway" | "storj" | "minio" | "dropbox" | "onedrive" | "garage";
+  presetId: PresetId;
   name: string;
   bucket: string;
   region: string;
@@ -451,15 +452,14 @@ export const api = {
 };
 
 export function bucketIdFor(connection: RemoteConnection): string {
-  // A Dropbox or OneDrive root is a path that may hold ":" or "|", which node IDs use as separators.
-  const folderRoot = connection.presetId === "dropbox" || connection.presetId === "onedrive";
-  return `${connection.id}/${folderRoot ? connection.presetId : connection.bucket}`;
+  // A folder-root provider's place is a path that may hold ":" or "|", which node IDs use as separators.
+  return `${connection.id}/${isFolderRoot(connection.presetId) ? connection.presetId : connection.bucket}`;
 }
 
-/** Dropbox and OneDrive roots are paths: show the service's name for the whole account, else the folder's. */
+/** A folder-root provider's place is a path: show the service's name for the whole account, else the folder's. */
 function bucketNames(connection: RemoteConnection): { name: string; title: string } {
-  if (connection.presetId !== "dropbox" && connection.presetId !== "onedrive") return { name: connection.bucket, title: connection.bucket };
-  const whole = connection.presetId === "dropbox" ? "Dropbox" : "OneDrive";
+  if (!isFolderRoot(connection.presetId)) return { name: connection.bucket, title: connection.bucket };
+  const whole = PROVIDERS[connection.presetId].service;
   if (connection.bucket === "/") return { name: whole, title: whole };
   return { name: connection.bucket.split("/").pop() ?? connection.bucket, title: connection.bucket };
 }

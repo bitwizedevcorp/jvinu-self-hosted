@@ -1,5 +1,5 @@
 import "server-only";
-import { eachLimit, type MetadataChange } from "./drivers/types";
+import { eachLimit, isTaken, type MetadataChange } from "./drivers/types";
 import { StorageUserError, type StorageDriver } from "./drivers";
 
 export type OperationItem = { key: string; kind: "file" | "folder" };
@@ -62,10 +62,8 @@ export async function prepareOperation(driver: StorageDriver, operation: Operati
   }
 
   // Never overwrite silently: refuse if anything is already at a destination.
-  for (const { item, to } of pairs) {
-    const { keys } = await driver.listKeys(to, 5);
-    const occupied = item.kind === "folder" ? keys.length > 0 : keys.includes(to);
-    if (occupied) throw new StorageUserError(`Something named “${to.replace(/\/$/, "").split("/").pop()}” is already there.`, 409);
+  for (const { to } of pairs) {
+    if (await isTaken(driver, to)) throw new StorageUserError(`Something named “${to.replace(/\/$/, "").split("/").pop()}” is already there.`, 409);
   }
   return { op: operation.op, pairs };
 }

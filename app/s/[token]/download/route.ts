@@ -1,11 +1,8 @@
-import { LINK_VISITOR, recordActivity } from "@/app/lib/server/activity";
-import { getConnection } from "@/app/lib/server/connections";
-import { driverFor } from "@/app/lib/server/drivers";
 import { StorageUserError } from "@/app/lib/server/drivers/types";
 import { handle, readForm } from "@/app/lib/server/http";
-import { checkPassword, openLink, overLimit, refusal, type Refusal } from "@/app/lib/server/share-access";
-import { servedFromCopy } from "@/app/lib/server/share-copies";
-import { attachmentResponse, startDownload } from "@/app/lib/server/share-serve";
+import type { Refusal } from "@/app/lib/server/share-access";
+import { redeemLink } from "@/app/lib/server/share-redeem";
+import { attachmentResponse } from "@/app/lib/server/share-serve";
 
 /**
  * A shared file's bytes. The recipient's page posts here (with the password, if the link
@@ -47,32 +44,9 @@ async function download(request: Request, token: string, password: string | null
   };
 
   try {
-    const busy = overLimit("download", token, request.headers);
-    if (busy) return refuse(busy);
-    const opened = await openLink(token);
-    if ("code" in opened) return refuse(opened);
-    const { link, passwordHash } = opened;
-    const wrong = await checkPassword(link, passwordHash, password, request.headers);
-    if (wrong) return refuse(wrong);
-
-    const connection = await getConnection(link.connectionId);
-    if (!connection) return refuse(refusal("gone"));
-    let delivery;
-    try {
-      // From the share bucket's copy once it's there; the original until then, or if it's gone.
-      const copy = await servedFromCopy(link);
-      delivery = copy
-        ? await startDownload(link, copy.driver, copy.key).catch((error) => {
-            if (error instanceof StorageUserError && error.status === 404) return startDownload(link, driverFor(connection));
-            throw error;
-          })
-        : await startDownload(link, driverFor(connection));
-    } catch (error) {
-      if (error instanceof StorageUserError && error.status === 404) return refuse(refusal("gone"));
-      if (error instanceof StorageUserError && error.status === 410) return refuse(refusal("used-up"));
-      throw error;
-    }
-    await recordActivity({ connectionId: link.connectionId, actor: LINK_VISITOR, action: "link-downloaded", target: link.key, detail: { linkId: link.id } });
+    const redeemed = await redeemLink(token, password, request.headers);
+    if ("refused" in redeemed) return refuse(redeemed.refused);
+    const { link, delivery } = redeemed;
     if (delivery.kind === "redirect") {
       return new Response(null, {
         status: request.method === "POST" ? 303 : 302,

@@ -1,11 +1,9 @@
 import { actorOf, recordActivity } from "@/app/lib/server/activity";
-import { managedBlocks } from "@/app/lib/server/bundled-storage";
 import { getConnection } from "@/app/lib/server/connections";
-import { forgetTables, tablesTouched } from "@/app/lib/server/data/lake";
 import { driverFor } from "@/app/lib/server/drivers";
 import { guardConnection } from "@/app/lib/server/guard";
+import { admitWrite, refusalResponse } from "@/app/lib/server/write-admission";
 import { cleanPrefix, fail, handle, readJson, tooLarge } from "@/app/lib/server/http";
-import { forgetInventory } from "@/app/lib/server/inventory";
 import { startTask } from "@/app/lib/server/jobs";
 import type { OperationItem } from "@/app/lib/server/operations";
 import { pairsFor, planTransfer, runTransfer, TRANSFER_LIMIT, type TransferPair } from "@/app/lib/server/transfer";
@@ -43,11 +41,6 @@ export async function POST(request: Request, ctx: RouteContext<"/api/connections
   try {
     const target = typeof body.targetConnectionId === "string" ? await getConnection(body.targetConnectionId) : undefined;
     if (!target) return fail("Choose a connection to copy to.", 400);
-    if (target.readOnly) return fail(`“${target.name}” is read-only. Turn that off in its settings to copy there.`, 403);
-    if (target.managed) {
-      const blocked = await managedBlocks(target);
-      if (blocked) return fail(blocked, 507);
-    }
     const source = driverFor(guarded.connection);
     const targetDriver = driverFor(target);
 
@@ -89,20 +82,16 @@ export async function POST(request: Request, ctx: RouteContext<"/api/connections
       label = `Copying ${what} to ${target.name}${destination ? `/${destination}` : ""}`;
     }
 
-    if (body.acknowledgeTables !== true) {
-      const tables = await tablesTouched(targetDriver, target.id, "copy", [], landing);
-      if (tables.length) {
-        return Response.json({ error: tables.map((change) => change.message).join(" "), code: "lake-table", tables }, { status: 409 });
-      }
-    }
+    const refused = await admitWrite({
+      connection: target,
+      kind: "copy",
+      tables: { driver: targetDriver, items: [], destination: landing, acknowledged: body.acknowledgeTables === true },
+    });
+    if (refused) return refusalResponse(refused);
 
     const job = await startTask(guarded.user.id, guarded.connection.id, "transfer", label, async (report, cancelled) => {
-      try {
-        return await runTransfer(source, targetDriver, pairs, report, cancelled);
-      } finally {
-        forgetInventory(target.id);
-        forgetTables(target.id);
-      }
+      // Each write to the target forgets what was remembered about it (connection-changes.ts).
+      return runTransfer(source, targetDriver, pairs, report, cancelled);
     });
     // On both sides: what left this connection, and what arrived on the other.
     const actor = actorOf(guarded.user);

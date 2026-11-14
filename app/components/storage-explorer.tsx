@@ -46,7 +46,6 @@ import {
   type RemoteConnection,
   type RemoteListing,
   type ShareLink,
-  tableChangesOf,
 } from "../lib/remote";
 import { LAKE_LABELS, type LakeRoot, type TableChange } from "../lib/data-types";
 import { AddProviderDialog, type ConnectValues } from "./add-provider-dialog";
@@ -59,6 +58,7 @@ import { ConnectionSettingsDialog } from "./connection-settings-dialog";
 import { connectionIdOf, keys, useAllListedNodes, useHealth, useListing } from "../lib/queries";
 import { useDebounced } from "../lib/use-debounced";
 import { JobsTray } from "./jobs-tray";
+import { jobOutcome, useJobs, withTableCheck, type JobMeta } from "./use-jobs";
 import { ThemeSync } from "./theme";
 import { DetailPanel } from "./detail-panel";
 import { DataPreviewDialog } from "./data-preview-dialog";
@@ -105,6 +105,7 @@ import {
   StarIcon,
   UploadIcon,
 } from "./icons";
+import { profileOf } from "../lib/providers";
 
 /** Platform-correct shortcut hint, without a hydration mismatch. */
 const subscribeToNothing = () => () => {};
@@ -117,21 +118,13 @@ type Location = { scope: Scope; bucketId: string; path: string[] };
 function whereIs(connection: { endpoint?: string; region: string; presetId: string }): string {
   if (connection.endpoint) return `on ${new URL(connection.endpoint).host}`;
   if (connection.region) return `in ${connection.region}`;
-  return connection.presetId === "azure"
-    ? "on Azure"
-    : connection.presetId === "gcs"
-      ? "on Google Cloud"
-      : connection.presetId === "dropbox"
-        ? "on Dropbox"
-        : connection.presetId === "onedrive"
-          ? "on OneDrive"
-          : "";
+  return profileOf(connection.presetId)?.where ?? "";
 }
 
 function targetOf(connection: { endpoint?: string; region: string; presetId: string }): string {
   if (connection.endpoint) return new URL(connection.endpoint).host;
   if (connection.region) return connection.region;
-  return connection.presetId === "azure" ? "Azure" : connection.presetId === "gcs" ? "Google Cloud" : connection.presetId === "dropbox" ? "Dropbox" : connection.presetId === "onedrive" ? "OneDrive" : "cloud";
+  return profileOf(connection.presetId)?.service ?? "the provider";
 }
 
 /** ?bucket=<connection>/<bucket>&prefix=a/b/  or  ?view=starred */
@@ -371,8 +364,7 @@ export function StorageExplorer({ user }: { user: SignedInUser }) {
   /** Disk space behind bundled storage, by connection id. */
 
   /** Background copies, moves, renames and deletes started here (or still running). */
-  const [jobs, setJobs] = useState<Job[]>([]);
-  const jobMeta = useRef(new Map<string, { bucketId: string; verb: string }>());
+  const { jobs, follow, followById: followJob, dismissFinished } = useJobs(finishJob);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [xrayOpen, setXrayOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -714,13 +706,6 @@ export function StorageExplorer({ user }: { user: SignedInUser }) {
   // Most likely JVINU_SECRET is missing on the server: say so rather than hang.
   const connectionsError = connectionsQuery.error?.message;
 
-  // Tasks still running from before a reload carry on in the tray.
-  useEffect(() => {
-    api
-      .jobs()
-      .then((list) => setJobs(list.filter((job) => job.status === "running")))
-      .catch(() => {});
-  }, []);
   const crossBucket = scope !== "bucket" || searching;
 
   useEffect(() => {
@@ -988,64 +973,45 @@ export function StorageExplorer({ user }: { user: SignedInUser }) {
   /**
    * Starts the operation as a background job. Quick problems (a name clash, moving a folder
    * into itself) throw with the server's message, so the open dialog can show it; the rest
-   * is followed in the tasks tray.
+   * is followed in the jobs tray. One that touches a data-lake table asks first.
    */
-  async function runOperation(request: OperationRequest, verb: string, acknowledgeTables = false) {
+  function runOperation(request: OperationRequest, verb: string) {
     const targetBucket = bucket;
-    let job: Job;
-    try {
-      job = await api.operation(targetBucket.remote.connectionId, request, acknowledgeTables);
-    } catch (error) {
-      // It touches a data-lake table: show what breaks, and go on only if asked twice.
-      const changes = tableChangesOf(error);
-      if (!changes) throw error;
-      setTablePrompt({
-        changes,
-        verb: TABLE_VERBS[request.op],
-        proceed: () => void runOperation(request, verb, true).catch((failure: Error) => setToast(failure.message)),
-      });
-      return;
-    }
-    jobMeta.current.set(job.id, { bucketId: targetBucket.id, verb });
-    setJobs((current) => [job, ...current]);
-    if (request.op !== "copy" && request.op !== "metadata") setSelectedId(null);
-    setChecked(new Set());
+    return withTableCheck(
+      async (acknowledgeTables) => {
+        const job = await api.operation(targetBucket.remote.connectionId, request, acknowledgeTables);
+        follow(job, { bucketId: targetBucket.id, verb });
+        if (request.op !== "copy" && request.op !== "metadata") setSelectedId(null);
+        setChecked(new Set());
+      },
+      TABLE_VERBS[request.op],
+      setTablePrompt,
+      setToast,
+    );
   }
 
   /** A copy to another connection started: follow it, and re-list the other side when it ends. */
   function followTransfer(job: Job, targetConnectionId: string) {
     const target = connections.find((connection) => connection.id === targetConnectionId);
-    jobMeta.current.set(job.id, { bucketId: target ? bucketIdFor(target) : "", verb: "Copied" });
-    setJobs((current) => [job, ...current]);
+    follow(job, { bucketId: target ? bucketIdFor(target) : "", verb: "Copied" });
     setChecked(new Set());
   }
 
   /** Copies the selection into a folder on another connection, pausing first if that's inside a table. */
-  async function runTransfer(items: OperationItem[], targetConnectionId: string, destination: string, acknowledgeTables = false) {
-    try {
-      const { job } = await api.transfer(bucket.remote.connectionId, { targetConnectionId, items, destination, acknowledgeTables });
-      followTransfer(job, targetConnectionId);
-    } catch (error) {
-      const changes = tableChangesOf(error);
-      if (!changes) throw error;
-      setTablePrompt({
-        changes,
-        verb: "Copy",
-        proceed: () => void runTransfer(items, targetConnectionId, destination, true).catch((failure: Error) => setToast(failure.message)),
-      });
-    }
-  }
-
-  /** A copy into the share bucket started from the share dialog: follow it in the tray. */
-  function followJob(jobId: string) {
-    api
-      .job(jobId)
-      .then((job) => setJobs((current) => (current.some((item) => item.id === job.id) ? current : [job, ...current])))
-      .catch(() => {});
+  function runTransfer(items: OperationItem[], targetConnectionId: string, destination: string) {
+    return withTableCheck(
+      async (acknowledgeTables) => {
+        const { job } = await api.transfer(bucket.remote.connectionId, { targetConnectionId, items, destination, acknowledgeTables });
+        followTransfer(job, targetConnectionId);
+      },
+      "Copy",
+      setTablePrompt,
+      setToast,
+    );
   }
 
   /** A job ended: re-list what it touched and say how it went. */
-  const finishJob = useEffectEvent((job: Job) => {
+  function finishJob(job: Job, meta: JobMeta | undefined) {
     if (job.op === "share-copy") {
       void queryClient.invalidateQueries({ queryKey: keys.shares });
       const bucketConnection = connections.find((connection) => connection.settings.shareTarget);
@@ -1057,46 +1023,12 @@ export function StorageExplorer({ user }: { user: SignedInUser }) {
       );
       return;
     }
-    const meta = jobMeta.current.get(job.id);
-    jobMeta.current.delete(job.id);
     const touched = connections.find((connection) => connection.id === job.connectionId);
     invalidateBucket(meta?.bucketId ?? (touched ? bucketIdFor(touched) : ""));
     void queryClient.invalidateQueries({ queryKey: keys.items });
     refreshDisks();
-    const verb = meta?.verb ?? "Processed";
-    const count = `${job.done.toLocaleString("en-US")} object${job.done === 1 ? "" : "s"}`;
-    setToast(
-      job.status === "done"
-        ? job.failed.length
-          ? `${verb} ${count} — ${job.failed.length} couldn't be ${verb.toLowerCase()}`
-          : `${verb} ${count}`
-        : job.status === "cancelled"
-          ? `Cancelled after ${count}`
-          : (job.error ?? "That task didn't finish"),
-    );
-  });
-
-  // Running jobs are polled until they end; anything still running from before a reload
-  // is picked up too.
-  const runningIds = jobs
-    .filter((job) => job.status === "running")
-    .map((job) => job.id)
-    .join(",");
-  useEffect(() => {
-    if (!runningIds) return;
-    const timer = window.setInterval(() => {
-      for (const id of runningIds.split(",")) {
-        api
-          .job(id)
-          .then((next) => {
-            setJobs((current) => current.map((job) => (job.id === id ? next : job)));
-            if (next.status !== "running") finishJob(next);
-          })
-          .catch(() => {});
-      }
-    }, 600);
-    return () => window.clearInterval(timer);
-  }, [runningIds]);
+    setToast(jobOutcome(job, meta?.verb));
+  }
 
   function openAction(action: "rename" | "move" | "copy" | "delete" | "metadata", target: StorageNode[]) {
     if (!target.length || readOnly) return;
@@ -2471,7 +2403,7 @@ export function StorageExplorer({ user }: { user: SignedInUser }) {
           onCancel={(id) => {
             api.cancelJob(id).catch((error: Error) => setToast(error.message));
           }}
-          onDismiss={() => setJobs((current) => current.filter((job) => job.status === "running"))}
+          onDismiss={dismissFinished}
         />
       ) : null}
 

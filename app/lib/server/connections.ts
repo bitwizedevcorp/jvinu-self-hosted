@@ -1,4 +1,5 @@
 import "server-only";
+import { signsLinks } from "./drivers/links";
 import { randomUUID } from "node:crypto";
 import { openWith, sealWith } from "./crypto";
 import { db } from "./db";
@@ -14,24 +15,10 @@ function parseSettings(raw: string | null | undefined): ConnectionSettings {
   }
 }
 
-/**
- * Where bundled storage is reachable from outside (a tunnel, a reverse proxy), if anywhere.
- * Only then can it hand out links; otherwise its files are served through this app.
- */
-export function storagePublicUrl(): string | null {
-  const raw = process.env.JVINU_STORAGE_PUBLIC_URL?.trim();
-  if (!raw) return null;
-  try {
-    const url = new URL(raw);
-    return url.protocol === "https:" || url.protocol === "http:" ? url.origin + url.pathname.replace(/\/+$/, "") : null;
-  } catch {
-    return null;
-  }
-}
 
-export type ProviderKind = "s3" | "azure" | "gcs" | "oci" | "dropbox" | "onedrive";
-/** What the user picked. S3-compatible clouds run on the S3 driver with their own endpoint. */
-export type PresetId = ProviderKind | "r2" | "wasabi" | "b2" | "spaces" | "scaleway" | "storj" | "minio" | "garage";
+/** What the user picked (a kind, or an S3-compatible provider on the S3 driver): see app/lib/providers.ts. */
+export type { PresetId, ProviderKind } from "../providers";
+import type { PresetId } from "../providers";
 
 /** Why the server, not a user, owns a connection: bundled Garage, or storage bought from a seller. */
 export type Managed = "bundled-storage" | "cloud-storage";
@@ -73,20 +60,37 @@ export type OneDriveCredentials = {
   /** The account's sign-in name, shown as the connection hint. */
   account?: string;
 };
+export type GoogleDriveCredentials = {
+  kind: "gdrive";
+  /** The user's own OAuth client ("Web application") in Google Cloud. */
+  clientId: string;
+  /** Google requires it for web clients, even with PKCE. Sealed like every other credential. */
+  clientSecret: string;
+  /** From the sign-in. Lasts until the user removes the app's access. */
+  refreshToken: string;
+  /**
+   * Google granted read-only access (drive.readonly): Google itself refuses every change,
+   * so the connection stays read-only until it's connected again with full access.
+   */
+  readOnlyAccess?: boolean;
+  /** The account's email, shown as the connection hint. */
+  account?: string;
+};
 export type Credentials =
   | S3Credentials
   | AzureCredentials
   | GcsCredentials
   | OciCredentials
   | DropboxCredentials
-  | OneDriveCredentials;
+  | OneDriveCredentials
+  | GoogleDriveCredentials;
 
 /** What the server keeps. Never serialised to the client. */
 export type StoredConnection = {
   id: string;
   presetId: PresetId;
   name: string;
-  /** Bucket; container on Azure; root folder ("/", "/Photos") on Dropbox and OneDrive. */
+  /** Bucket; container on Azure; root folder ("/", "/Photos") on Dropbox, OneDrive and Google Drive. */
   bucket: string;
   region: string;
   /** Set for emulators and S3-compatible services; absent means the provider's public cloud. */
@@ -342,6 +346,8 @@ function hintFor(credentials: Credentials): string {
       return credentials.account ?? `app ${mask(credentials.appKey)}`;
     case "onedrive":
       return credentials.account ?? `app ${mask(credentials.clientId)}`;
+    case "gdrive":
+      return credentials.account ?? `app ${mask(credentials.clientId)}`;
   }
 }
 
@@ -355,12 +361,7 @@ export function toPublic(connection: StoredConnection): PublicConnection {
     region: connection.region,
     endpoint: connection.endpoint,
     accessKeyHint: hintFor(c),
-    // Encrypted files can only be read through this app, so the provider can't link to them.
-    canShareLinks: connection.crypt
-      ? false
-      : connection.presetId === "garage"
-        ? Boolean(storagePublicUrl())
-        : c.kind === "s3" || (c.kind === "azure" && !connection.endpoint) || (c.kind === "gcs" && Boolean(c.privateKey)),
+    canShareLinks: signsLinks(connection),
     // The public demo changes nothing, whatever a connection's own setting says.
     readOnly: connection.readOnly || process.env.JVINU_DEMO === "1",
     managed: Boolean(connection.managed),

@@ -1,5 +1,5 @@
 import "server-only";
-import { eachLimit, StorageUserError, type StorageDriver } from "./drivers/types";
+import { eachLimit, isTaken, StorageUserError, type StorageDriver } from "./drivers/types";
 import type { OperationItem } from "./operations";
 
 /**
@@ -29,8 +29,7 @@ export async function planTransfer(
   const pairs: TransferPair[] = [];
   for (const item of items) {
     const to = destination + nameOf(item) + (item.kind === "folder" ? "/" : "");
-    const { keys: taken } = await target.listKeys(to, 5);
-    if (item.kind === "folder" ? taken.length > 0 : taken.includes(to)) {
+    if (await isTaken(target, to)) {
       throw new StorageUserError(`Something named “${nameOf(item)}” is already there.`, 409);
     }
     if (item.kind === "file") {

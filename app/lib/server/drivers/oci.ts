@@ -11,6 +11,7 @@ import {
   type FolderStats,
   type Listing,
   type StorageDriver,
+  fileFromHead,
 } from "./types";
 
 type Target = {
@@ -192,6 +193,11 @@ export function ociDriver(target: Target): StorageDriver {
     signedUrl: () => Promise.resolve(null),
 
     // Oracle encrypts all Object Storage data at rest; the HEAD response doesn't say more.
+    // The file at exactly this key: what its head says, or nothing on a 404.
+    findFile(key) {
+      return fileFromHead(key, () => this.head!(key));
+    },
+
     head: (key) =>
       run(async (os) => {
         const out = await os.headObject({ ...base, objectName: key });
