@@ -1,8 +1,7 @@
 import { actorOf, recordActivity } from "@/app/lib/server/activity";
-import { tablesTouched } from "@/app/lib/server/data/lake";
 import { driverFor } from "@/app/lib/server/drivers";
-import { managedBlocks } from "@/app/lib/server/bundled-storage";
 import { guardConnection } from "@/app/lib/server/guard";
+import { admitWrite, refusalResponse } from "@/app/lib/server/write-admission";
 import { cleanPrefix, fail, handle, readJson, tooLarge } from "@/app/lib/server/http";
 import { startJob } from "@/app/lib/server/jobs";
 import { prepareOperation, type Operation, type OperationItem } from "@/app/lib/server/operations";
@@ -109,31 +108,24 @@ export async function POST(request: Request, ctx: RouteContext<"/api/connections
       return fail("Unknown operation.", 400);
   }
 
-  // Copies add data; on managed storage they stop at the same line uploads do.
-  if (operation.op === "copy" && guarded.connection.managed) {
-    const blocked = await managedBlocks(guarded.connection);
-    if (blocked) return fail(blocked, 507);
-  }
-
   try {
     const driver = driverFor(guarded.connection);
-    // Files inside a Delta, Iceberg or Hudi table belong to the engine that wrote them: say so
-    // first, and go ahead only once the person has seen what breaks.
-    if (body.acknowledgeTables !== true && operation.op !== "metadata") {
-      const tables = await tablesTouched(
-        driver,
-        guarded.connection.id,
-        operation.op === "rename" ? "move" : operation.op,
-        operation.items,
-        operation.op === "copy" || operation.op === "move" ? operation.destination : undefined,
-      );
-      if (tables.length) {
-        return Response.json(
-          { error: tables.map((change) => change.message).join(" "), code: "lake-table", tables },
-          { status: 409 },
-        );
-      }
-    }
+    // Copies add data, so they stop at a managed connection's limit; files inside a Delta,
+    // Iceberg or Hudi table belong to the engine that wrote them, so say what breaks first.
+    const refused = await admitWrite({
+      connection: guarded.connection,
+      kind: operation.op,
+      tables:
+        operation.op === "metadata"
+          ? undefined
+          : {
+              driver,
+              items: operation.items,
+              destination: operation.op === "copy" || operation.op === "move" ? operation.destination : undefined,
+              acknowledged: body.acknowledgeTables === true,
+            },
+    });
+    if (refused) return refusalResponse(refused);
     const prepared = await prepareOperation(driver, operation);
     const job = await startJob(guarded.user.id, guarded.connection, prepared, label);
     // Moving something to where it already is does nothing, and isn't history.

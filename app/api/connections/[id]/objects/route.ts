@@ -1,6 +1,7 @@
 import { actorOf, recordActivity } from "@/app/lib/server/activity";
 import { driverFor } from "@/app/lib/server/drivers";
 import { guardConnection } from "@/app/lib/server/guard";
+import { admitWrite, refusalResponse } from "@/app/lib/server/write-admission";
 import { cleanPrefix, fail, handle, readJson } from "@/app/lib/server/http";
 
 /** One page of a folder level; pass `token` from the previous page for the next. */
@@ -30,6 +31,9 @@ export async function POST(request: Request, ctx: RouteContext<"/api/connections
     if (prefix === null) return fail("Invalid prefix.", 400);
     if (!folder || folder.includes("/") || folder === "." || folder === "..")
       return fail("Folder names can't be empty or contain “/”.", 400);
+    // A folder adds nothing, but a managed connection that's full takes nothing more.
+    const refused = await admitWrite({ connection: guarded.connection, kind: "folder" });
+    if (refused) return refusalResponse(refused);
     // Object stores have no folders: a zero-byte object ending in "/" is the convention.
     await driverFor(guarded.connection).write(`${prefix}${folder}/`, new Uint8Array());
     await recordActivity({ connectionId: guarded.connection.id, actor: actorOf(guarded.user), action: "folder-created", target: `${prefix}${folder}/` });

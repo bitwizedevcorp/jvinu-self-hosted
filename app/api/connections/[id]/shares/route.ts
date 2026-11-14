@@ -4,6 +4,7 @@ import { StorageUserError, type StorageDriver } from "@/app/lib/server/drivers/t
 import { guardConnection } from "@/app/lib/server/guard";
 import { fail, handle, readJson, tooLarge } from "@/app/lib/server/http";
 import { copyFor, shareBucket, shareBucketRefusal } from "@/app/lib/server/share-copies";
+import { admitWrite, refusalResponse } from "@/app/lib/server/write-admission";
 import { createShareLink, shareView } from "@/app/lib/server/shares";
 
 /** Links last at most a year; "no expiry" is chosen explicitly (null). */
@@ -64,6 +65,9 @@ export async function POST(request: Request, ctx: RouteContext<"/api/connections
       const bucket = await shareBucket();
       const refusal = shareBucketRefusal(connection, bucket);
       if (refusal) return fail(refusal, 400);
+      // The copy adds data to the share bucket, which may be a managed connection.
+      const refused = await admitWrite({ connection: bucket!, kind: "copy", bytes: size ?? 0 });
+      if (refused) return refusalResponse(refused);
       // Reusing a copy is only safe when the original says which version it is.
       if (!etag) return fail("This connection doesn't report file versions, so its files can't go through the share bucket.", 400);
       copy = await copyFor({
