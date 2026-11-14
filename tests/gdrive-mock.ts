@@ -19,7 +19,8 @@ export const MOCK_DRIVE = { clientId: "1-abc.apps.googleusercontent.com", client
  * `pageSize`: how many items one files.list page holds. Google may return fewer than asked
  * for; a small page puts same-named items on different pages.
  */
-export function createGoogleDriveMock({ pageSize = 2 }: { pageSize?: number } = {}) {
+export function createGoogleDriveMock({ pageSize: initialPageSize = 2 }: { pageSize?: number } = {}) {
+  let pageSize = initialPageSize;
   const files = new Map<string, MockFile>();
   const uploads = new Map<string, { file: MockFile; chunks: Buffer[] }>();
   const seen: string[] = [];
@@ -182,6 +183,10 @@ export function createGoogleDriveMock({ pageSize = 2 }: { pageSize?: number } = 
     files,
     seen,
     add,
+    /** How many items each files.list page holds from now on. */
+    setPageSize(size: number) {
+      pageSize = size;
+    },
     /** Empties the drive. */
     clear() {
       files.clear();

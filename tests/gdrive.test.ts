@@ -143,6 +143,43 @@ describe("Google Drive driver", () => {
     expect(await work.findFile("missing.csv")).toBeNull();
   });
 
+  it("keeps '.pdf' on a renamed or copied Google document, so its new key still opens", async () => {
+    const work = driver("/Work");
+    await expect(work.rename!("Plan.pdf", "Notes")).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/Notes\.pdf/) });
+    await expect(work.copy("Plan.pdf", "Sub/Notes")).rejects.toMatchObject({ status: 400 });
+    await work.rename!("Plan.pdf", "Notes.pdf");
+    expect(await work.findFile("Notes.pdf")).toMatchObject({ key: "Notes.pdf", sizeUnknown: true });
+    expect((await work.list("")).files.map((file) => file.key)).toContain("Notes.pdf");
+  });
+
+  it("finds the wanted item among same-named ones on later pages", async () => {
+    // Two pages of two: what a path opens comes after items of other types with its name.
+    const mix = add("Mix", "root", FOLDER);
+    add("Twin", mix.id, FOLDER);
+    add("Twin", mix.id, DOC);
+    add("Twin", mix.id, "text/plain", "the stored file");
+    add("Box", mix.id, "text/plain", "a file named Box");
+    add("Box", mix.id, "text/plain", "another");
+    const box = add("Box", mix.id, FOLDER);
+    add("inside.txt", box.id, "text/plain", "in the folder");
+    const d = driver("/Mix");
+    expect(await text((await d.read("Twin")).stream)).toBe("the stored file");
+    expect(await text((await d.read("Box/inside.txt")).stream)).toBe("in the folder");
+    expect((await d.list("Box/")).files.map((file) => file.key)).toEqual(["Box/inside.txt"]);
+  });
+
+  it("says a folder is too big to list rather than showing part of it as the whole", async () => {
+    google.setPageSize(1);
+    try {
+      const huge = add("Huge", "root", FOLDER);
+      for (let i = 0; i < 101; i++) add(`f${i}.txt`, huge.id, "text/plain", "x");
+      // 100 Drive pages is the cap; at one item a page, 101 items go past it.
+      await expect(driver("/Huge").list("")).rejects.toMatchObject({ status: 413, message: expect.stringMatching(/more than/) });
+    } finally {
+      google.setPageSize(2);
+    }
+  });
+
   it("walks folders for listKeys and stats", async () => {
     const work = driver("/Work");
     const { keys } = await work.listKeys("", 100);

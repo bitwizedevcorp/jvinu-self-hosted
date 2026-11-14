@@ -22,6 +22,7 @@ import { checkEncryptedBucket, cryptDriver } from "../app/lib/server/drivers/cry
 import { dropboxDriver, dropboxFolder, exchangeDropboxCode } from "../app/lib/server/drivers/dropbox";
 import { gcsDriver } from "../app/lib/server/drivers/gcs";
 import { ociDriver } from "../app/lib/server/drivers/oci";
+import { atSeam } from "../app/lib/server/drivers";
 import { googleDriveDriver } from "../app/lib/server/drivers/gdrive";
 import { oneDriveDriver } from "../app/lib/server/drivers/onedrive";
 import { s3Driver } from "../app/lib/server/drivers/s3";
@@ -453,6 +454,14 @@ describe.each(HARNESSES.map((harness, index) => ({ harness, up: status[index] })
       expect(await driver.findFile("exact/sales/")).toBeNull();
 
       await driver.remove(["exact/sales.csv", "exact/sales.csv.bak", "exact/sales/inner.csv"]);
+    });
+
+    it("reaches a folder named without its '/', as every caller's driver does", async () => {
+      // driverFor's seam names "tree" as "tree/" before the driver sees it.
+      const seen = atSeam(driver, { scope: `contract-${harness.name}` });
+      expect((await seen.listKeys("tree", 100)).keys.sort()).toEqual((await driver.listKeys("tree/", 100)).keys.sort());
+      expect((await seen.inventory("tree")).files.map((file) => file.key).sort()).toEqual(["tree/sub/deep.txt", "tree/top.txt"]);
+      expect((await seen.stats("tree")).objects).toBe(2);
     });
 
     it("copies, leaving the source", async () => {

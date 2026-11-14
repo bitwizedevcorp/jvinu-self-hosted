@@ -336,16 +336,26 @@ export function googleDriveDriver(target: Target): StorageDriver {
 
   /** Everything named `name` directly inside a folder, oldest first. */
   async function childrenNamed(parentId: string, name: string): Promise<Node[]> {
-    const data = await call(() =>
-      drive.files.list({
-        q: `${driveQuote(parentId)} in parents and name = ${driveQuote(name)} and trashed = false`,
-        fields: `files(${FIELDS})`,
-        orderBy: "createdTime",
-        pageSize: 20,
-        spaces: "drive",
-      }),
-    );
-    return (data.files ?? []) as Node[];
+    // Every page: folders, files and Google documents can share a name, and the one wanted
+    // (the oldest of its type, as listings choose) may come after a page of the others.
+    const nodes: Node[] = [];
+    let token: string | undefined;
+    for (let page = 0; page < 50; page++) {
+      const data = await call(() =>
+        drive.files.list({
+          q: `${driveQuote(parentId)} in parents and name = ${driveQuote(name)} and trashed = false`,
+          fields: `nextPageToken,files(${FIELDS})`,
+          orderBy: "createdTime",
+          pageSize: 100,
+          pageToken: token,
+          spaces: "drive",
+        }),
+      );
+      nodes.push(...((data.files ?? []) as Node[]));
+      token = data.nextPageToken ?? undefined;
+      if (!token) break;
+    }
+    return nodes;
   }
 
   /** The ID of the folder at these absolute path parts; null when it isn't there (unless `create`). */
@@ -547,8 +557,14 @@ export function googleDriveDriver(target: Target): StorageDriver {
     const parts = partsOf(key);
     let name = parts.pop();
     if (!name) throw new StorageUserError("That isn't a valid destination.", 400);
-    // A Google document keeps its own name: the ".pdf" is only how it's listed.
-    if (exported && name.endsWith(EXPORT_EXT) && name.length > EXPORT_EXT.length) name = name.slice(0, -EXPORT_EXT.length);
+    // A Google document is listed as "Name.pdf" and stored as "Name". Its new key must end in
+    // ".pdf" too: a key without it would never be listed or found, and saved stars, recent
+    // items and notes moved to that key would point at nothing.
+    if (exported) {
+      if (!name.endsWith(EXPORT_EXT) || name.length === EXPORT_EXT.length)
+        throw new StorageUserError(`A Google document keeps “.pdf” at the end of its name here — try “${name}${EXPORT_EXT}”.`, 400);
+      name = name.slice(0, -EXPORT_EXT.length);
+    }
     const parentId = await folderId(parts, true);
     if (!parentId) throw new StorageUserError("That folder no longer exists.", 404);
     if (await occupied(parentId, name)) throw taken();
@@ -611,7 +627,14 @@ export function googleDriveDriver(target: Target): StorageDriver {
         let entries: FolderEntry[];
         if (cached && cached.expires > Date.now()) entries = cached.entries;
         else {
-          entries = sortForDisplay((await readFolder(id, FOLDER_PAGES)).entries);
+          const read = await readFolder(id, FOLDER_PAGES);
+          // Shown whole or not at all: a listing cut at the cap would pass for the complete folder.
+          if (read.truncated)
+            throw new StorageUserError(
+              `This folder holds more than ${(FOLDER_PAGES * PAGE).toLocaleString("en-US")} items, more than jvinu lists from one Google Drive folder. Open it in Google Drive, or move some into subfolders.`,
+              413,
+            );
+          entries = sortForDisplay(read.entries);
           listings.delete(cacheKey);
           listings.set(cacheKey, { entries, expires: Date.now() + LISTING_TTL });
           if (listings.size > 50) listings.delete(listings.keys().next().value!);
