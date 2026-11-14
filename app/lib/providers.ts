@@ -38,19 +38,21 @@ export type ProviderProfile = {
   /** What a file's full location is called when it's copied. */
   pathLabel: string;
   atRest: AtRest;
+  /** Where atRest is "optional": what the provider calls asking for it (SSE-S3, SSE-B2). */
+  sseName?: string;
 };
 
 const bucket = (service: string, atRest: AtRest, where = ""): ProviderProfile => ({ service, place: "bucket", where, pathLabel: "S3 URI", atRest });
 const folder = (service: string): ProviderProfile => ({ service, place: "folder", where: `on ${service}`, pathLabel: `${service} path`, atRest: "none" });
 
 export const PROVIDERS: Record<PresetId, ProviderProfile> = {
-  s3: bucket("Amazon S3", "optional"),
+  s3: { ...bucket("Amazon S3", "optional"), sseName: "SSE-S3" },
   azure: { service: "Azure", place: "container", where: "on Azure", pathLabel: "S3 URI", atRest: "always" },
   gcs: bucket("Google Cloud", "always", "on Google Cloud"),
   oci: bucket("Oracle Cloud", "always"),
   r2: bucket("Cloudflare R2", "always"),
   wasabi: bucket("Wasabi", "always"),
-  b2: bucket("Backblaze B2", "optional"),
+  b2: { ...bucket("Backblaze B2", "optional"), sseName: "SSE-B2" },
   spaces: bucket("DigitalOcean Spaces", "none"),
   scaleway: bucket("Scaleway", "none"),
   storj: bucket("Storj", "always"), // end-to-end encrypted by the network

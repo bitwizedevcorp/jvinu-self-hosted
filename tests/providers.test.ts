@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CONNECTABLE, PROVIDER_KINDS, PROVIDERS, S3_COMPATIBLE_IDS, isFolderRoot, placeLabel, profileOf } from "@/app/lib/providers";
 import { PROVIDER_PRESETS } from "@/app/lib/storage";
 import { S3_COMPATIBLE } from "@/app/lib/server/s3-compatible";
-import { PRICE_SHEETS } from "@/app/lib/pricing";
+import { PRICE_SHEETS, sheetFor } from "@/app/lib/pricing";
 import { prepareConnection } from "@/app/lib/server/provider-connect";
 
 /** One profile per provider: every list that names providers agrees with it. */
@@ -26,6 +26,29 @@ describe("provider profiles", () => {
     expect(profileOf("onedrive")?.pathLabel).toBe("OneDrive path");
     expect(profileOf("nope")).toBeUndefined();
     expect(profileOf("__proto__")).toBeUndefined();
+  });
+});
+
+describe("every provider, complete", () => {
+  it("has a connector whose place agrees with its profile", () => {
+    for (const id of CONNECTABLE) {
+      const prepared = prepareConnection({ presetId: id, bucket: "/a/../b" });
+      expect("error" in prepared, id).toBe(true);
+      const error = (prepared as { error: string }).error;
+      if (PROVIDERS[id].place === "folder") expect(error, id).toBe(`Enter a folder path such as /Photos, or / for the whole ${PROVIDERS[id].service}.`);
+      else expect(error, id).toBe(`That isn't a valid ${PROVIDERS[id].place} name.`);
+    }
+  });
+
+  it("names its at-rest encryption exactly where it's optional", () => {
+    for (const [id, profile] of Object.entries(PROVIDERS)) expect(Boolean(profile.sseName), id).toBe(profile.atRest === "optional");
+  });
+
+  it("prices a custom S3 endpoint as unknown, in one place", () => {
+    expect(typeof sheetFor("s3", undefined)).toBe("object");
+    expect(sheetFor("s3", "http://localhost:9000")).toBe("unknown");
+    expect(sheetFor("minio", "http://localhost:9000")).toBe("self-hosted");
+    expect(sheetFor("nope", undefined)).toBe("unknown");
   });
 });
 

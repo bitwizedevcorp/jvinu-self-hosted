@@ -7,6 +7,7 @@ import { atRestEncryption } from "../lib/connection-settings";
 /** New encrypted stores need at least this; the server checks again (and knows about rclone stores). */
 const MIN_PASSPHRASE = 12;
 import { PROVIDER_PRESETS, findPreset, isConnectable, type ConnectableKind } from "../lib/storage";
+import { profileOf } from "../lib/providers";
 import { CheckIcon, ChevronDown, CloseIcon, ExternalIcon, LockIcon, PlusIcon } from "./icons";
 import { WEBSITE_URL } from "../lib/site";
 
@@ -892,7 +893,7 @@ export function AddProviderDialog({
               <span>
                 <span className="block text-[13.5px] font-medium text-ink">Encrypt new files at rest</span>
                 <span className="block text-[12.5px] text-ink-muted">
-                  Asks {presetId === "b2" ? "Backblaze (SSE-B2)" : "the service (SSE-S3)"} to encrypt everything jvinu uploads or copies, with
+                  Asks the service ({profileOf(presetId)?.sseName}) to encrypt everything jvinu uploads or copies, with
                   keys it manages. {presetId === "s3" ? "On AWS this is already the default; other S3 services must support SSE-S3." : ""}
                 </span>
               </span>

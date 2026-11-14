@@ -1,6 +1,6 @@
 import "server-only";
 import { PROVIDER_KINDS, PROVIDERS, type ProviderKind } from "../providers";
-import type { Credentials } from "./connections";
+import type { Credentials, DropboxCredentials, GoogleDriveCredentials, OneDriveCredentials } from "./connections";
 import { dropboxAccount, dropboxFolder, exchangeDropboxCode } from "./drivers/dropbox";
 import { driveFolder, exchangeDriveCode, googleDriveAccount } from "./drivers/gdrive";
 import { oneDriveAccount, oneDriveFolder, oneDriveTenant, redeemOneDriveSignIn } from "./drivers/onedrive";
@@ -51,10 +51,25 @@ function buildS3Compatible(id: S3CompatibleId, body: Record<string, unknown>): B
   return { credentials: { kind: "s3", accessKeyId, secretAccessKey }, region: located.region, endpoint: located.endpoint };
 }
 
-/** Turn the form for one provider into credentials, or say exactly what's wrong. */
-function buildCredentials(kind: ProviderKind, body: Record<string, unknown>, endpoint: string | undefined): Built {
-  switch (kind) {
-    case "s3": {
+/** What the connect flow needs from the request, for providers that sign in. */
+type SignInContext = { userId: string; request: Request; readOnly: boolean };
+
+/**
+ * The server's half of each provider, in one entry: how its form becomes credentials (or
+ * what's wrong, in words), how a folder-root provider writes its place, and how a provider
+ * that signs in trades the one-time sign-in for a lasting token. Every kind must have one.
+ */
+type Connector = {
+  parse(body: Record<string, unknown>, endpoint: string | undefined): Built;
+  /** Folder-root providers: the place written as "/" or "/Folder/Sub", or null if it can't be one. */
+  place?: (raw: string) => string | null;
+  /** Providers that sign in: the credentials with their lasting token and the account's name. */
+  signIn?: (prepared: PreparedConnection, context: SignInContext) => Promise<Credentials>;
+};
+
+const CONNECTORS: Record<ProviderKind, Connector> = {
+  s3: {
+    parse: (body, endpoint) => {
       const accessKeyId = str(body.accessKeyId, 128);
       const secretAccessKey = str(body.secretAccessKey, 256);
       const region = str(body.region, 32) || "us-east-1";
@@ -68,18 +83,20 @@ function buildCredentials(kind: ProviderKind, body: Record<string, unknown>, end
         if (secretAccessKey.length < 16) return { error: "That doesn't look like an AWS secret access key." };
       }
       return { credentials: { kind: "s3", accessKeyId, secretAccessKey }, region };
-    }
-
-    case "azure": {
+    },
+  },
+  azure: {
+    parse: (body) => {
       const accountName = str(body.accountName, 64);
       const accountKey = str(body.accountKey, 256);
       if (!/^[a-z0-9]{3,24}$/.test(accountName))
         return { error: "Storage account names are 3–24 lowercase letters and digits." };
       if (!/^[A-Za-z0-9+/=]{20,}$/.test(accountKey)) return { error: "That doesn't look like an Azure account key." };
       return { credentials: { kind: "azure", accountName, accountKey }, region: "" };
-    }
-
-    case "gcs": {
+    },
+  },
+  gcs: {
+    parse: (body, endpoint) => {
       const projectId = str(body.projectId, 128) || undefined;
       const raw = str(body.serviceAccountKey, 8192);
       if (!raw) {
@@ -104,9 +121,10 @@ function buildCredentials(kind: ProviderKind, body: Record<string, unknown>, end
         },
         region: "",
       };
-    }
-
-    case "oci": {
+    },
+  },
+  oci: {
+    parse: (body) => {
       const namespace = str(body.namespace, 64);
       const region = str(body.region, 64);
       const tenancy = str(body.tenancy, 256);
@@ -122,9 +140,10 @@ function buildCredentials(kind: ProviderKind, body: Record<string, unknown>, end
       if (!/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(privateKey))
         return { error: "Paste the API private key as PEM, including the BEGIN/END lines." };
       return { credentials: { kind: "oci", namespace, tenancy, user, fingerprint, privateKey, passphrase }, region };
-    }
-
-    case "dropbox": {
+    },
+  },
+  dropbox: {
+    parse: (body) => {
       const appKey = str(body.appKey, 64);
       const code = str(body.code, 512);
       const verifier = str(body.codeVerifier, 128);
@@ -132,9 +151,41 @@ function buildCredentials(kind: ProviderKind, body: Record<string, unknown>, end
       if (!/^[A-Za-z0-9_.~-]{43,128}$/.test(verifier)) return { error: "Click “Allow access on Dropbox” first, then paste the code it shows." };
       if (!/^[A-Za-z0-9_.~-]{8,512}$/.test(code)) return { error: "Paste the access code Dropbox showed you." };
       return { credentials: { kind: "dropbox", appKey, refreshToken: "" }, region: "", link: { code, verifier } };
-    }
-
-    case "gdrive": {
+    },
+    place: dropboxFolder,
+    signIn: async (prepared) => {
+      const credentials = prepared.credentials as DropboxCredentials;
+      if (!prepared.link) return credentials;
+      const refreshToken = await exchangeDropboxCode(credentials.appKey, prepared.link.code, prepared.link.verifier);
+      const account = await dropboxAccount({ appKey: credentials.appKey, refreshToken });
+      return { ...credentials, refreshToken, account: account ?? undefined };
+    },
+  },
+  onedrive: {
+    parse: (body) => {
+      const clientId = str(body.clientId, 64);
+      const tenant = oneDriveTenant(str(body.tenant, 128));
+      const signIn = str(body.signIn, 8192);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientId))
+        return { error: "The application (client) ID is a GUID, like 11111111-2222-3333-4444-555555555555." };
+      if (!tenant) return { error: "The tenant is “common”, “consumers”, “organizations”, or a tenant ID or domain." };
+      if (!signIn) return { error: "Click “Sign in with Microsoft” first, then enter the code it shows at Microsoft." };
+      return { credentials: { kind: "onedrive", clientId, tenant, refreshToken: "" }, region: "", signIn };
+    },
+    place: oneDriveFolder,
+    signIn: async (prepared, context) => {
+      const credentials = prepared.credentials as OneDriveCredentials;
+      if (!prepared.signIn) return credentials;
+      const pending = openSignIn(prepared.signIn, context.userId);
+      if (!pending || pending.clientId !== credentials.clientId || pending.tenant !== credentials.tenant)
+        throw new StorageUserError("That Microsoft sign-in has expired, or the client ID or tenant changed since — click “Sign in with Microsoft” again.", 400);
+      const refreshToken = await redeemOneDriveSignIn(credentials, pending.deviceCode);
+      const account = await oneDriveAccount({ ...credentials, refreshToken });
+      return { ...credentials, refreshToken, account: account ?? undefined };
+    },
+  },
+  gdrive: {
+    parse: (body) => {
       const clientId = str(body.clientId, 256);
       const clientSecret = str(body.clientSecret, 256);
       const code = str(body.code, 1024);
@@ -145,26 +196,25 @@ function buildCredentials(kind: ProviderKind, body: Record<string, unknown>, end
       if (!/^[A-Za-z0-9_.~-]{43,128}$/.test(verifier)) return { error: "Click “Sign in with Google” first, then paste the code it shows." };
       if (!/^[A-Za-z0-9_/.~-]{8,1024}$/.test(code)) return { error: "Paste the code jvinu showed after you signed in with Google." };
       return { credentials: { kind: "gdrive", clientId, clientSecret, refreshToken: "" }, region: "", link: { code, verifier } };
-    }
-
-    case "onedrive": {
-      const clientId = str(body.clientId, 64);
-      const tenant = oneDriveTenant(str(body.tenant, 128));
-      const signIn = str(body.signIn, 8192);
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientId))
-        return { error: "The application (client) ID is a GUID, like 11111111-2222-3333-4444-555555555555." };
-      if (!tenant) return { error: "The tenant is “common”, “consumers”, “organizations”, or a tenant ID or domain." };
-      if (!signIn) return { error: "Click “Sign in with Microsoft” first, then enter the code it shows at Microsoft." };
-      return { credentials: { kind: "onedrive", clientId, tenant, refreshToken: "" }, region: "", signIn };
-    }
-  }
-}
-
-/** How each folder-root provider writes its place: "/" or "/Folder/Sub", or null if it can't be one. */
-const FOLDER_ROOTS: Record<"dropbox" | "onedrive" | "gdrive", (raw: string) => string | null> = {
-  dropbox: dropboxFolder,
-  onedrive: oneDriveFolder,
-  gdrive: driveFolder,
+    },
+    place: driveFolder,
+    signIn: async (prepared, context) => {
+      const credentials = prepared.credentials as GoogleDriveCredentials;
+      if (!prepared.link) return credentials;
+      const { refreshToken, readOnlyAccess } = await exchangeDriveCode({
+        clientId: credentials.clientId,
+        clientSecret: credentials.clientSecret,
+        code: prepared.link.code,
+        verifier: prepared.link.verifier,
+        redirectUri: driveRedirectUri(context.request),
+      });
+      // Granted read-only, it can only be a read-only connection: Google would refuse every change.
+      if (readOnlyAccess && !context.readOnly)
+        throw new StorageUserError("Google granted read-only access, but Read-only is off. Tick Read-only, or click “Sign in with Google” again with it off.", 400);
+      const account = await googleDriveAccount({ ...credentials, refreshToken });
+      return { ...credentials, refreshToken, ...(readOnlyAccess ? { readOnlyAccess: true } : {}), account: account ?? undefined };
+    },
+  },
 };
 
 export type PreparedConnection = {
@@ -184,10 +234,9 @@ export function prepareConnection(body: Record<string, unknown>): PreparedConnec
   const kind = body.presetId;
   if (!isKind(kind) && !isS3Compatible(kind)) return { error: "That provider can't be connected yet." };
   const profile = PROVIDERS[kind];
-  const folderRoot = profile.place === "folder";
-  const bucket = folderRoot
-    ? (FOLDER_ROOTS[kind as keyof typeof FOLDER_ROOTS](str(body.bucket, 1024)) ?? "")
-    : str(body.bucket, 256);
+  const placeOf = isS3Compatible(kind) ? undefined : CONNECTORS[kind].place;
+  const folderRoot = Boolean(placeOf);
+  const bucket = placeOf ? (placeOf(str(body.bucket, 1024)) ?? "") : str(body.bucket, 256);
   const endpoint = folderRoot ? undefined : cleanEndpoint(body.endpoint);
 
   if (folderRoot) {
@@ -198,7 +247,7 @@ export function prepareConnection(body: Record<string, unknown>): PreparedConnec
 
   // S3-compatible providers ignore any endpoint the client sends; theirs is derived (MinIO's is
   // the one typed, checked the same way as a custom S3 endpoint).
-  const built = isS3Compatible(kind) ? buildS3Compatible(kind, body) : buildCredentials(kind, body, endpoint);
+  const built = isS3Compatible(kind) ? buildS3Compatible(kind, body) : CONNECTORS[kind].parse(body, endpoint);
   if ("error" in built) return built;
   return {
     presetId: kind,
@@ -217,35 +266,8 @@ export function prepareConnection(body: Record<string, unknown>): PreparedConnec
  */
 export async function completeSignIn(
   prepared: PreparedConnection,
-  context: { userId: string; request: Request; readOnly: boolean },
+  context: SignInContext,
 ): Promise<Credentials> {
-  const credentials = prepared.credentials;
-  if (prepared.link && credentials.kind === "dropbox") {
-    const refreshToken = await exchangeDropboxCode(credentials.appKey, prepared.link.code, prepared.link.verifier);
-    const account = await dropboxAccount({ appKey: credentials.appKey, refreshToken });
-    return { ...credentials, refreshToken, account: account ?? undefined };
-  }
-  if (prepared.link && credentials.kind === "gdrive") {
-    const { refreshToken, readOnlyAccess } = await exchangeDriveCode({
-      clientId: credentials.clientId,
-      clientSecret: credentials.clientSecret,
-      code: prepared.link.code,
-      verifier: prepared.link.verifier,
-      redirectUri: driveRedirectUri(context.request),
-    });
-    // Granted read-only, it can only be a read-only connection: Google would refuse every change.
-    if (readOnlyAccess && !context.readOnly)
-      throw new StorageUserError("Google granted read-only access, but Read-only is off. Tick Read-only, or click “Sign in with Google” again with it off.", 400);
-    const account = await googleDriveAccount({ ...credentials, refreshToken });
-    return { ...credentials, refreshToken, ...(readOnlyAccess ? { readOnlyAccess: true } : {}), account: account ?? undefined };
-  }
-  if (prepared.signIn && credentials.kind === "onedrive") {
-    const pending = openSignIn(prepared.signIn, context.userId);
-    if (!pending || pending.clientId !== credentials.clientId || pending.tenant !== credentials.tenant)
-      throw new StorageUserError("That Microsoft sign-in has expired, or the client ID or tenant changed since — click “Sign in with Microsoft” again.", 400);
-    const refreshToken = await redeemOneDriveSignIn(credentials, pending.deviceCode);
-    const account = await oneDriveAccount({ ...credentials, refreshToken });
-    return { ...credentials, refreshToken, account: account ?? undefined };
-  }
-  return credentials;
+  const signIn = isS3Compatible(prepared.presetId) ? undefined : CONNECTORS[prepared.presetId].signIn;
+  return signIn && (prepared.link || prepared.signIn) ? signIn(prepared, context) : prepared.credentials;
 }
