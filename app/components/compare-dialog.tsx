@@ -93,7 +93,12 @@ export function CompareDialog({
     comparison && tab === "different"
       ? comparison.different.map((diff) => ({
           path: diff.path,
-          detail: diff.reason === "size" ? `${formatBytes(diff.left.size)} here · ${formatBytes(diff.right.size)} there` : "same size, different contents",
+          detail:
+            diff.reason === "size"
+              ? `${formatBytes(diff.left.size)} here · ${formatBytes(diff.right.size)} there`
+              : diff.reason === "unknown"
+                ? "can't compare: a Google document's size isn't known until it's exported"
+                : "same size, different contents",
         }))
       : comparison
         ? (tab === "onlyLeft" ? comparison.onlyLeft : comparison.onlyRight).map((entry) => ({ path: entry.path, detail: formatBytes(entry.size) }))

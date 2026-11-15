@@ -152,6 +152,25 @@ describe("Google Drive driver", () => {
     expect((await work.list("")).files.map((file) => file.key)).toContain("Notes.pdf");
   });
 
+  it("lets a document take a name only another document or stored file would show as", async () => {
+    const shelf = add("Shelf", "root", FOLDER);
+    add("Notes", shelf.id, FOLDER); // shown as "Notes/"
+    add("Notes", shelf.id, "text/plain", "a plain file"); // shown as "Notes"
+    add("Plan", shelf.id, DOC); // shown as "Plan.pdf"
+    add("Taken", shelf.id, DOC); // shown as "Taken.pdf"
+    add("Report.pdf", shelf.id, "application/pdf", "stored"); // shown as "Report.pdf"
+    const d = driver("/Shelf");
+    // "Notes.pdf" is free, whatever is called "Notes".
+    await d.copy("Plan.pdf", "Notes.pdf");
+    await d.rename!("Plan.pdf", "Memo.pdf");
+    expect((await d.list("")).files.map((file) => file.key).sort()).toEqual(["Memo.pdf", "Notes", "Notes.pdf", "Report.pdf", "Taken.pdf"]);
+    // Taken: by another document, by a stored file of that name.
+    await expect(d.rename!("Memo.pdf", "Taken.pdf")).rejects.toMatchObject({ status: 409 });
+    await expect(d.rename!("Memo.pdf", "Report.pdf")).rejects.toMatchObject({ status: 409 });
+    // A stored file can't take a name a document is shown under either.
+    await expect(d.copy("Notes", "Taken.pdf")).rejects.toMatchObject({ status: 409 });
+  });
+
   it("finds the wanted item among same-named ones on later pages", async () => {
     // Two pages of two: what a path opens comes after items of other types with its name.
     const mix = add("Mix", "root", FOLDER);

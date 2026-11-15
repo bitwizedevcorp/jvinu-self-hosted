@@ -7,6 +7,7 @@ import { StorageUserError, type StorageDriver } from "./drivers/types";
 import { startTask } from "./jobs";
 import { effectiveType } from "./mime";
 import { linksForCopy, stateOf, type ShareLink } from "./shares";
+import { admitWrite } from "./write-admission";
 
 /**
  * The share bucket: one connection marked "share from here". A file shared from another
@@ -134,6 +135,13 @@ export async function copyFor(input: {
       [input.sourceConnectionId, input.key, input.version, input.bucket.id],
     );
     if (existing) return fromRow(existing);
+
+    // Only a new copy adds data to the share bucket, which may be a managed connection
+    // (bundled storage, a paid plan): reusing one above needs no room.
+    // (A bucket that's gone is handled where the copy runs.)
+    const bucket = await getConnection(input.bucket.id);
+    const refused = bucket ? await admitWrite({ connection: bucket, kind: "copy", bytes: input.size ?? 0 }) : null;
+    if (refused) throw new StorageUserError(refused.error, refused.status);
 
     const id = randomBytes(9).toString("base64url");
     const name = input.key.split("/").pop() ?? input.key;

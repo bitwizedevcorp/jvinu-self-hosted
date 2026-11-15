@@ -99,7 +99,7 @@ export type Comparison = {
   right: { files: number; bytes: number; truncated: boolean };
   onlyLeft: CompareEntry[];
   onlyRight: CompareEntry[];
-  different: { path: string; left: CompareEntry; right: CompareEntry; reason: "size" | "checksum" }[];
+  different: { path: string; left: CompareEntry; right: CompareEntry; reason: "size" | "checksum" | "unknown" }[];
   counts: { onlyLeft: number; onlyRight: number; different: number; same: number };
   bytes: { onlyLeft: number; onlyRight: number; different: number };
   checksums: boolean;

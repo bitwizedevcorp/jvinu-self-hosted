@@ -92,3 +92,21 @@ describe("copying between connections", () => {
     expect(none.files.size).toBe(0);
   });
 });
+
+describe("comparing files whose size isn't known", () => {
+  it("lists them as unknown, to copy, rather than calling them the same", async () => {
+    // Google documents on both sides: listed with size 0 and no checksum until exported.
+    const docs = () => {
+      const driver = memoryDriver({ "Plan.pdf": "x", "notes.txt": "same" });
+      const inventory = driver.inventory.bind(driver);
+      driver.inventory = async (prefix, maxPages) => {
+        const listed = await inventory(prefix, maxPages);
+        return { ...listed, files: listed.files.map((file) => (file.key === "Plan.pdf" ? { ...file, size: 0, etag: null, sizeUnknown: true } : file)) };
+      };
+      return driver;
+    };
+    const result = await compareFolders({ driver: docs(), prefix: "" }, { driver: docs(), prefix: "" });
+    expect(result.different).toEqual([expect.objectContaining({ path: "Plan.pdf", reason: "unknown" })]);
+    expect(result.counts).toMatchObject({ different: 1, same: 1 });
+  });
+});

@@ -549,11 +549,29 @@ export function googleDriveDriver(target: Target): StorageDriver {
     }
   }
 
-  const occupied = async (parentId: string, name: string) => (await childrenNamed(parentId, name)).length > 0;
   const taken = () => new StorageUserError("Something with that name is already there.", 409);
+  const isStored = (node: Node) => !NATIVE.test(node.mimeType);
+
+  /**
+   * Is the key an item would be shown under, in this folder, already shown for something
+   * else? Drive itself allows any names together; what matters is the key. A folder is
+   * "Name/"; a stored file is "Name", hiding a Google document listed as that name; a Google
+   * document named "Name" is "Name.pdf", taken by another such document or a stored "Name.pdf".
+   */
+  async function keyTaken(parentId: string, name: string, kind: "folder" | "stored" | "exported"): Promise<boolean> {
+    if (kind === "folder") return (await childrenNamed(parentId, name)).some((node) => node.mimeType === FOLDER);
+    if (kind === "exported") {
+      if ((await childrenNamed(parentId, name)).some((node) => EXPORTABLE.has(node.mimeType))) return true;
+      return (await childrenNamed(parentId, name + EXPORT_EXT)).some(isStored);
+    }
+    if ((await childrenNamed(parentId, name)).some(isStored)) return true;
+    const document = name.endsWith(EXPORT_EXT) ? name.slice(0, -EXPORT_EXT.length) : "";
+    return document ? (await childrenNamed(parentId, document)).some((node) => EXPORTABLE.has(node.mimeType)) : false;
+  }
 
   /** Where a copy or move lands: the folder (created if need be) and the name to give it there. */
-  async function destination(key: string, exported: boolean) {
+  async function destination(key: string, found: Found) {
+    const exported = found.exported;
     const parts = partsOf(key);
     let name = parts.pop();
     if (!name) throw new StorageUserError("That isn't a valid destination.", 400);
@@ -567,7 +585,7 @@ export function googleDriveDriver(target: Target): StorageDriver {
     }
     const parentId = await folderId(parts, true);
     if (!parentId) throw new StorageUserError("That folder no longer exists.", 404);
-    if (await occupied(parentId, name)) throw taken();
+    if (await keyTaken(parentId, name, found.node.mimeType === FOLDER ? "folder" : exported ? "exported" : "stored")) throw taken();
     return { parentId, name };
   }
 
@@ -783,7 +801,7 @@ export function googleDriveDriver(target: Target): StorageDriver {
       run(async () => {
         const found = await entryAt(source);
         if (!found) throw new StorageUserError("That file or folder no longer exists.", 404);
-        const { parentId, name } = await destination(to, found.exported);
+        const { parentId, name } = await destination(to, found);
         if (found.node.mimeType === FOLDER) return copyTree(found.node.id, parentId, name);
         await call(() => drive.files.copy({ fileId: found.node.id, requestBody: { name, parents: [parentId] }, fields: "id" }));
       }),
@@ -792,7 +810,7 @@ export function googleDriveDriver(target: Target): StorageDriver {
       run(async () => {
         const found = await entryAt(source);
         if (!found) throw new StorageUserError("That file or folder no longer exists.", 404);
-        const { parentId, name } = await destination(to, found.exported);
+        const { parentId, name } = await destination(to, found);
         await call(() =>
           drive.files.update({
             fileId: found.node.id,
