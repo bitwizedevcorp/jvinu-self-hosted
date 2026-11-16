@@ -152,7 +152,7 @@ describe("Google Drive driver", () => {
     expect((await work.list("")).files.map((file) => file.key)).toContain("Notes.pdf");
   });
 
-  it("lets a document take a name only another document or stored file would show as", async () => {
+  it("refuses a document a key only when another document or stored file is shown under it", async () => {
     const shelf = add("Shelf", "root", FOLDER);
     add("Notes", shelf.id, FOLDER); // shown as "Notes/"
     add("Notes", shelf.id, "text/plain", "a plain file"); // shown as "Notes"

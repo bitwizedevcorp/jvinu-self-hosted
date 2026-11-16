@@ -106,7 +106,7 @@ describe("comparing files whose size isn't known", () => {
       return driver;
     };
     const result = await compareFolders({ driver: docs(), prefix: "" }, { driver: docs(), prefix: "" });
-    expect(result.different).toEqual([expect.objectContaining({ path: "Plan.pdf", reason: "unknown" })]);
+    expect(result.different).toEqual([expect.objectContaining({ path: "Plan.pdf", reason: "size-unknown" })]);
     expect(result.counts).toMatchObject({ different: 1, same: 1 });
   });
 });

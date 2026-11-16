@@ -6,12 +6,12 @@ import type { Listing, StorageDriver } from "./drivers/types";
  * has, and what both have but differs. Files match by their path inside each folder;
  * "differs" means another size, or another checksum where both sides report a comparable one.
  * A file whose size can't be known until it's read (a Google document, exported on request)
- * can't be told the same: it's listed with the differences, as "unknown", so it can be copied.
+ * can't be told the same: it's listed with the differences, as "size-unknown", so it can be copied.
  */
 
 export type CompareSide = { files: number; bytes: number; truncated: boolean };
 export type CompareEntry = { path: string; size: number; lastModified: string | null };
-export type CompareDiff = { path: string; left: CompareEntry; right: CompareEntry; reason: "size" | "checksum" | "unknown" };
+export type CompareDiff = { path: string; left: CompareEntry; right: CompareEntry; reason: "size" | "checksum" | "size-unknown" };
 export type Comparison = {
   left: CompareSide;
   right: CompareSide;
@@ -44,6 +44,16 @@ function byPath(files: Listing["files"], prefix: string) {
 
 const entry = (path: string, file: Listing["files"][number]): CompareEntry => ({ path, size: file.size, lastModified: file.lastModified });
 
+type Listed = Listing["files"][number];
+
+/** Why two files at the same path can't be called the same, or null when they can. */
+function differs(file: Listed, other: Listed, checksums: boolean): CompareDiff["reason"] | null {
+  if (file.sizeUnknown || other.sizeUnknown) return "size-unknown";
+  if (file.size !== other.size) return "size";
+  if (checksums && md5(file.etag) && md5(other.etag) && md5(file.etag) !== md5(other.etag)) return "checksum";
+  return null;
+}
+
 export async function compareFolders(
   left: { driver: StorageDriver; prefix: string; encrypted?: boolean },
   right: { driver: StorageDriver; prefix: string; encrypted?: boolean },
@@ -64,11 +74,9 @@ export async function compareFolders(
       onlyLeft.push(entry(path, file));
       continue;
     }
-    if (file.sizeUnknown || other.sizeUnknown) different.push({ path, left: entry(path, file), right: entry(path, other), reason: "unknown" });
-    else if (file.size !== other.size) different.push({ path, left: entry(path, file), right: entry(path, other), reason: "size" });
-    else if (checksums && md5(file.etag) && md5(other.etag) && md5(file.etag) !== md5(other.etag)) {
-      different.push({ path, left: entry(path, file), right: entry(path, other), reason: "checksum" });
-    } else same++;
+    const reason = differs(file, other, checksums);
+    if (reason) different.push({ path, left: entry(path, file), right: entry(path, other), reason });
+    else same++;
   }
   for (const [path, file] of rightFiles) if (!leftFiles.has(path)) onlyRight.push(entry(path, file));
 

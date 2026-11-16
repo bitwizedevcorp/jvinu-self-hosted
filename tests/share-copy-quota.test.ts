@@ -47,7 +47,7 @@ afterAll(async () => (await copies()).resolveDriversWith(null));
 const copyOf = async (version: string) =>
   (await copies()).copyFor({ userId: "alice", sourceConnectionId: "origin", key: "docs/report.pdf", version, size: 10, bucket: BUCKET });
 
-describe("share copies into a managed bucket", () => {
+describe("share copies into a share bucket on a managed connection", () => {
   it("refuse a new copy when it's full, but reuse an existing one", async () => {
     limit.full = false;
     const first = await copyOf("v1");

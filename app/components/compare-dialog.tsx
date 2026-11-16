@@ -96,7 +96,7 @@ export function CompareDialog({
           detail:
             diff.reason === "size"
               ? `${formatBytes(diff.left.size)} here · ${formatBytes(diff.right.size)} there`
-              : diff.reason === "unknown"
+              : diff.reason === "size-unknown"
                 ? "can't compare: a Google document's size isn't known until it's exported"
                 : "same size, different contents",
         }))

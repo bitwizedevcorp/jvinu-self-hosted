@@ -63,6 +63,10 @@ const EXPORTABLE = new Set([
   "application/vnd.google-apps.drawing",
 ]);
 const EXPORT_EXT = ".pdf";
+/** A file Drive stores as bytes, under its own name. */
+const isStored = (node: { mimeType: string }) => !NATIVE.test(node.mimeType);
+/** A Google document jvinu shows as a PDF. */
+const isExportable = (node: { mimeType: string }) => EXPORTABLE.has(node.mimeType);
 const EXPORT_TYPE = "application/pdf";
 const FIELDS = "id,name,mimeType,size,modifiedTime,md5Checksum";
 const PAGE = 1000;
@@ -87,8 +91,8 @@ export const driveQuote = (name: string) => `'${name.replace(/\\/g, "\\\\").repl
 export function driveListedName(node: Pick<Node, "name" | "mimeType">): string | null {
   if (!node.name || node.name === "." || node.name === ".." || node.name.includes("/")) return null;
   if (node.mimeType === FOLDER) return node.name;
-  if (!NATIVE.test(node.mimeType)) return node.name;
-  return EXPORTABLE.has(node.mimeType) ? node.name + EXPORT_EXT : null;
+  if (isStored(node)) return node.name;
+  return isExportable(node) ? node.name + EXPORT_EXT : null;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -395,10 +399,10 @@ export function googleDriveDriver(target: Target): StorageDriver {
     if (!name) return null;
     const parentId = await folderId(parts);
     if (!parentId) return null;
-    const stored = (await childrenNamed(parentId, name)).find((node) => !NATIVE.test(node.mimeType));
+    const stored = (await childrenNamed(parentId, name)).find(isStored);
     if (stored) return { node: stored, parentId, exported: false };
     if (!name.endsWith(EXPORT_EXT) || name.length === EXPORT_EXT.length) return null;
-    const native = (await childrenNamed(parentId, name.slice(0, -EXPORT_EXT.length))).find((node) => EXPORTABLE.has(node.mimeType));
+    const native = (await childrenNamed(parentId, name.slice(0, -EXPORT_EXT.length))).find(isExportable);
     return native ? { node: native, parentId, exported: true } : null;
   }
 
@@ -503,7 +507,7 @@ export function googleDriveDriver(target: Target): StorageDriver {
     if (!name) throw new StorageUserError("That isn't a file name.", 400);
     const parentId = await folderId(parts, true);
     if (!parentId) throw new StorageUserError("That folder no longer exists.", 404);
-    const existing = (await childrenNamed(parentId, name)).find((node) => !NATIVE.test(node.mimeType));
+    const existing = (await childrenNamed(parentId, name)).find(isStored);
     const type = contentType || mimeOf(key) || "application/octet-stream";
     const start = await send(existing ? `${UPLOAD}/files/${encodeURIComponent(existing.id)}?uploadType=resumable` : `${UPLOAD}/files?uploadType=resumable`, {
       method: existing ? "PATCH" : "POST",
@@ -550,7 +554,6 @@ export function googleDriveDriver(target: Target): StorageDriver {
   }
 
   const taken = () => new StorageUserError("Something with that name is already there.", 409);
-  const isStored = (node: Node) => !NATIVE.test(node.mimeType);
 
   /**
    * Is the key an item would be shown under, in this folder, already shown for something
@@ -561,12 +564,12 @@ export function googleDriveDriver(target: Target): StorageDriver {
   async function keyTaken(parentId: string, name: string, kind: "folder" | "stored" | "exported"): Promise<boolean> {
     if (kind === "folder") return (await childrenNamed(parentId, name)).some((node) => node.mimeType === FOLDER);
     if (kind === "exported") {
-      if ((await childrenNamed(parentId, name)).some((node) => EXPORTABLE.has(node.mimeType))) return true;
+      if ((await childrenNamed(parentId, name)).some(isExportable)) return true;
       return (await childrenNamed(parentId, name + EXPORT_EXT)).some(isStored);
     }
     if ((await childrenNamed(parentId, name)).some(isStored)) return true;
     const document = name.endsWith(EXPORT_EXT) ? name.slice(0, -EXPORT_EXT.length) : "";
-    return document ? (await childrenNamed(parentId, document)).some((node) => EXPORTABLE.has(node.mimeType)) : false;
+    return document ? (await childrenNamed(parentId, document)).some(isExportable) : false;
   }
 
   /** Where a copy or move lands: the folder (created if need be) and the name to give it there. */
