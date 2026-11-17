@@ -206,10 +206,10 @@ export interface StorageDriver {
   upload(key: string, body: ReadableStream<Uint8Array>, size: number | undefined, contentType?: string): Promise<void>;
   /** Deletes keys; returns the ones that couldn't be deleted. A key that's already gone isn't a failure. */
   remove(keys: string[]): Promise<{ failed: string[] }>;
-  /** Server-side where the provider supports it. 404 if the source is missing. */
   /**
-   * A driver that copies a folder request by request (Google Drive) checks `cancelled` between
-   * requests and, once it's true, stops with `CopyCancelled`: part of the tree may be copied.
+   * Server-side where the provider supports it. 404 if the source is missing. A driver that
+   * copies a folder request by request checks `cancelled` between requests and, once it's
+   * true, stops with `CopyCancelled`: part of the tree may be copied by then.
    */
   copy(source: string, destination: string, options?: { cancelled?: () => boolean }): Promise<void>;
   /** One object's metadata, including how it's encrypted at rest. */

@@ -97,7 +97,7 @@ export type Progress = { done: number; failed: string[]; total: number };
 
 /**
  * Carries out planned steps, `CONCURRENCY` at a time. Deletes go out in batches of 1,000.
- * `onProgress` is called as work completes; `cancelled` is checked between steps.
+ * `onProgress` is called as work completes; `cancelled` is checked between steps, and inside a folder copy a driver does request by request.
  */
 export async function executeSteps(
   driver: StorageDriver,

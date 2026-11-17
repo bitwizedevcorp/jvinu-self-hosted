@@ -598,15 +598,15 @@ export function googleDriveDriver(target: Target): StorageDriver {
    * checking before every request whether the job was cancelled, since the tree is one step.
    */
   async function copyTree(sourceId: string, parentId: string, name: string, cancelled?: () => boolean) {
-    const go = () => {
+    const stopIfCancelled = () => {
       if (cancelled?.()) throw new CopyCancelled();
     };
-    go();
+    stopIfCancelled();
     const made = await call(() => drive.files.create({ requestBody: { name, mimeType: FOLDER, parents: [parentId] }, fields: "id" }));
     const targetId = made.id!;
     let token: string | undefined;
     do {
-      go();
+      stopIfCancelled();
       const data = await call(() =>
         drive.files.list({
           q: `${driveQuote(sourceId)} in parents and trashed = false`,
@@ -619,7 +619,7 @@ export function googleDriveDriver(target: Target): StorageDriver {
       const children = (data.files ?? []) as Node[];
       await eachLimit(children, 4, async (child) => {
         if (child.mimeType === FOLDER) return copyTree(child.id, targetId, child.name, cancelled);
-        go();
+        stopIfCancelled();
         await call(() => drive.files.copy({ fileId: child.id, requestBody: { name: child.name, parents: [targetId] }, fields: "id" }));
       });
       token = data.nextPageToken ?? undefined;
