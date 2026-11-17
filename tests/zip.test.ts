@@ -188,6 +188,20 @@ describe("zip archives", () => {
     await expect(collect(zipStream([broken], { skippable }))).rejects.toThrow("socket hang up");
   });
 
+  it("promise no length when a size is only known once the file is read", async () => {
+    // A Google document: listed with size 0, read as a whole PDF export.
+    const pdf = pattern(5_000);
+    const exported: ZipEntry = { ...entry("Plan.pdf", pdf), size: 0, sizeUnknown: true };
+    expect(exported.method).toBe("store");
+    expect(zipLength([entry("photo.jpg", pattern(300)), exported])).toBeNull();
+    // Without a promised length nothing is held to the listed size, and the PDF arrives whole.
+    const out = path.join(dir, "unknown-size.zip");
+    writeFileSync(out, await collect(zipStream([exported], { exactSizes: false })));
+    const found = inspect(out);
+    expect(found.bad).toBeNull();
+    expect(found.entries.map(([name, size]) => [name, size])).toEqual([["Plan.pdf", pdf.length]]);
+  });
+
   it("fail rather than mislead when a file changes size under a promised length", async () => {
     const shrunk: ZipEntry = { ...entry("shrunk.jpg", pattern(100)), size: 200 };
     await expect(collect(zipStream([shrunk], { exactSizes: true }))).rejects.toThrow(/changed while it was being zipped/);

@@ -15,6 +15,8 @@ export type ZipEntry = {
   name: string;
   /** Bytes the source will produce, from the listing. */
   size: number;
+  /** The listing couldn't say (a Google document's export): `size` is only a guess of 0. */
+  sizeUnknown?: boolean;
   modified: Date;
   method: "store" | "deflate";
   /** Called only when the entry's turn comes. Not called for folders. */
@@ -166,11 +168,13 @@ function endRecords(count: number, centralOffset: number, centralSize: number): 
 }
 
 /**
- * The archive's exact length when every entry is stored (no compression) — so a browser
- * can show progress — or null when something is deflated.
+ * The archive's exact length when every entry is stored (no compression) and its size is
+ * known — so a browser can show progress — or null when something is deflated or unsized.
  */
 export function zipLength(entries: ZipEntry[]): number | null {
   if (entries.some((entry) => entry.method !== "store" && !isFolder(entry))) return null;
+  // An entry whose size is only known once it's read can't be counted ahead.
+  if (entries.some((entry) => entry.sizeUnknown && !isFolder(entry))) return null;
   let offset = 0;
   let central = 0;
   for (const entry of entries) {

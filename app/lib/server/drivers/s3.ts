@@ -40,6 +40,7 @@ import {
   type MetadataSupport,
   type ObjectHead,
   type StorageDriver,
+  fileFromHead,
 } from "./types";
 import { forbiddenHost } from "../egress";
 
@@ -377,6 +378,11 @@ export function s3Driver(target: Target): StorageDriver {
         }
         return { failed };
       }),
+
+    // The file at exactly this key: what its head says, or nothing on a 404.
+    findFile(key) {
+      return fileFromHead(key, () => this.head!(key));
+    },
 
     head: (key) =>
       run(async (s3) => {

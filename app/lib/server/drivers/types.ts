@@ -14,6 +14,11 @@ export type Listing = {
   files: {
     key: string;
     size: number;
+    /**
+     * Set when the service can't say how big the file is until it's read (a Google document,
+     * exported on request); `size` is 0 then. Never set for a real empty file.
+     */
+    sizeUnknown?: boolean;
     lastModified: string | null;
     etag: string | null;
     storageClass: string | null;
@@ -21,6 +26,30 @@ export type Listing = {
   /** Pass back to list() for the next page; absent on the last page. */
   nextToken?: string;
 };
+
+/** One file, as a listing shows it. */
+export type ListedFile = Listing["files"][number];
+
+/**
+ * `findFile` for a driver that has `head`: the head's facts, or null when the provider says
+ * there's nothing there (404).
+ */
+export async function fileFromHead(key: string, head: () => Promise<ObjectHead>): Promise<ListedFile | null> {
+  if (!key || key.endsWith("/")) return null;
+  try {
+    const found = await head();
+    return { key, size: found.size ?? 0, lastModified: found.lastModified ?? null, etag: found.etag ?? null, storageClass: found.storageClass ?? null };
+  } catch (error) {
+    if (error instanceof StorageUserError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+/** Is something already at this key: the file, or for a folder key, anything below it? */
+export async function isTaken(driver: StorageDriver, key: string): Promise<boolean> {
+  if (key.endsWith("/")) return (await driver.listKeys(key, 1)).keys.length > 0;
+  return (await driver.findFile(key)) !== null;
+}
 
 export type FolderStats = {
   objects: number;
@@ -130,32 +159,59 @@ export interface BucketAudit {
   publicObject(key: string): Promise<boolean | null>;
 }
 
-/** Everything the app does to a bucket, regardless of whose cloud it is. */
+/**
+ * Everything the app does to a connection's place, whichever provider holds it.
+ *
+ * The contract every driver keeps (tests/drivers.contract.test.ts holds each one to it):
+ *
+ * - **Keys.** "a/b.txt" names a file; a key ending in "/" ("a/") names a folder; "" is the
+ *   connection's top. Keys never hold "." or ".." segments (driverFor refuses them).
+ * - **Folder markers.** `write("a/", empty)` makes an empty folder. A marker is never listed
+ *   as a file, never counted, and never inventoried; `listKeys` returns an empty folder's own
+ *   key, since that's what must be deleted or copied to keep it.
+ * - **Folders, and one file.** `list`, `listKeys`, `stats` and `inventory` take a folder key
+ *   (or "") and cover what's below it; driverFor turns a folder named without its "/" ("a")
+ *   into "a/" before any driver sees it. "Is there a file at exactly this key?" is `findFile`.
+ * - **Pages.** `nextToken` is opaque: pass it back to `list` with the same prefix, nothing
+ *   else. driverFor binds each token to its connection and prefix and refuses any other.
+ * - **Sizes.** `size` is the bytes `read` will return. When the service can't know them until
+ *   the file is read (a Google document's export), `size` is 0 and `sizeUnknown` is set.
+ * - **Errors.** Failures a person can act on are `StorageUserError`s with an HTTP status:
+ *   404 for a missing file or connection folder, 416 for a range outside the file, 409 for a
+ *   name that's taken.
+ */
 export interface StorageDriver {
-  /** Proves the credentials can list the bucket; returns its region if the service says. */
+  /** Proves the credentials can list the bucket; returns its region if the service says. 404 if it isn't there. */
   verify(): Promise<{ region?: string }>;
-  /** One page (≤ 1,000 entries) of a folder level. */
+  /** The file at exactly this key, as a listing would show it — or null when there's none (or the key is a folder key). */
+  findFile(key: string): Promise<ListedFile | null>;
+  /** One page (≤ 1,000 entries) of one folder level: files and the folders below. A folder that's gone reads as empty. */
   list(prefix: string, token?: string): Promise<Listing>;
-  /** Every key under a prefix, flat, up to `max` — for folder-wide operations. */
+  /** Every key below a folder, flat, up to `max`: files and empty folders' own keys. */
   listKeys(prefix: string, max: number): Promise<{ keys: string[]; truncated: boolean }>;
+  /** Files and bytes below a folder, reading up to `maxPages` pages of about 1,000. */
   stats(prefix: string, maxPages?: number): Promise<FolderStats>;
   /**
-   * Every file under a prefix, flat, with size, class and date — up to `maxPages` pages of
-   * about 1,000. For analytics; `truncated` when the cap was hit.
+   * Every file below a folder, flat, with size, class and date —
+   * up to `maxPages` pages of about 1,000. For analytics, SQL, zips; `truncated` when the cap was hit.
    */
   inventory(prefix: string, maxPages?: number): Promise<{ files: Listing["files"]; truncated: boolean }>;
   /** A signed URL anyone can use, or null when this connection can't sign one. */
   signedUrl(key: string, download: boolean, expiresIn: number): Promise<string | null>;
-  /** The object's bytes — or only `range` of them, for media seeking and resumed downloads. */
+  /** The object's bytes — or only `range` of them, for media seeking and resumed downloads. 404 if missing, 416 if out of range. */
   read(key: string, range?: ByteRange): Promise<ObjectBody>;
-  /** Small, in-memory writes (folder markers). */
+  /** Small, in-memory writes; a folder key with empty bytes makes an empty folder. Overwrites. */
   write(key: string, body: Uint8Array, contentType?: string): Promise<void>;
-  /** Streams a file of any size — multipart / block / resumable as the cloud prefers. */
+  /** Streams a file of any size — multipart / block / resumable as the provider prefers. Overwrites. */
   upload(key: string, body: ReadableStream<Uint8Array>, size: number | undefined, contentType?: string): Promise<void>;
-  /** Deletes keys; returns the ones that couldn't be deleted. */
+  /** Deletes keys; returns the ones that couldn't be deleted. A key that's already gone isn't a failure. */
   remove(keys: string[]): Promise<{ failed: string[] }>;
-  /** Server-side where the cloud supports it. */
-  copy(source: string, destination: string): Promise<void>;
+  /**
+   * Server-side where the provider supports it. 404 if the source is missing. A driver that
+   * copies a folder request by request checks `cancelled` between requests and, once it's
+   * true, stops with `CopyCancelled`: part of the tree may be copied by then.
+   */
+  copy(source: string, destination: string, options?: { cancelled?: () => boolean }): Promise<void>;
   /** One object's metadata, including how it's encrypted at rest. */
   head?(key: string): Promise<ObjectHead>;
   /** Changes headers, storage class or tags in place (a self-copy where the cloud needs one). */
@@ -165,26 +221,47 @@ export interface StorageDriver {
   /** A native rename, where one exists; otherwise callers copy then delete. */
   rename?(source: string, destination: string): Promise<void>;
   /**
-   * Folders are real (Dropbox): copy, rename and remove take a folder key ("a/") and act
-   * on the whole tree in one call, so callers needn't expand it object by object.
+   * Folders are real (Dropbox, OneDrive, Google Drive): copy, rename and remove take a folder
+   * key ("a/") and act on the whole tree in one call, so callers needn't expand it object by object.
    */
   nativeFolders?: boolean;
+  /** Bucket-level checks for Storage X-Ray; absent where the provider has no API for them. */
+  audit?: BucketAudit;
   /**
    * Set when the bucket holds only ciphertext (jvinu encryption): whatever this server
    * keeps that's derived from the files' contents (thumbnails) is sealed with it too.
    */
-  /** Bucket-level checks for Storage X-Ray; absent where the cloud has no API for them. */
-  audit?: BucketAudit;
   cacheCipher?: { seal(data: Uint8Array): Uint8Array; open(data: Uint8Array): Uint8Array };
 }
 
-/** Runs `work` over items with at most `limit` in flight. */
+/** A copy stopped part-way because its job was cancelled: not a failure. */
+export class CopyCancelled extends StorageUserError {
+  constructor() {
+    super("The copy was cancelled.", 409);
+  }
+}
+
+/**
+ * Runs `work` over items with at most `limit` in flight. Once one fails, no new item starts,
+ * and the first failure is thrown only after every item in flight has settled: when this
+ * returns or throws, nothing it started is still running.
+ */
 export async function eachLimit<T>(items: T[], limit: number, work: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
+  let failed = false;
+  let firstError: unknown;
   const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) await work(items[next++]);
+    while (!failed && next < items.length) {
+      try {
+        await work(items[next++]);
+      } catch (error) {
+        if (!failed) firstError = error;
+        failed = true;
+      }
+    }
   });
   await Promise.all(runners);
+  if (failed) throw firstError;
 }
 
 export const NETWORK_CODES = ["ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "ECONNRESET", "EAI_AGAIN", "REQUEST_SEND_ERROR"];

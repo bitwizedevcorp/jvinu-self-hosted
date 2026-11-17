@@ -18,6 +18,7 @@ import {
   type FolderStats,
   type Listing,
   type StorageDriver,
+  fileFromHead,
 } from "./types";
 
 type Target = { container: string; accountName: string; accountKey: string; endpoint?: string };
@@ -164,6 +165,11 @@ export function azureDriver(target: Target): StorageDriver {
       target.endpoint
         ? Promise.resolve(null)
         : run(async () => `${container.getBlobClient(key).url}?${sas(key, expiresIn, download)}`),
+
+    // The file at exactly this key: what its head says, or nothing on a 404.
+    findFile(key) {
+      return fileFromHead(key, () => this.head!(key));
+    },
 
     head: (key) =>
       run(async () => {

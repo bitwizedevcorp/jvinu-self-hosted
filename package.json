@@ -23,6 +23,7 @@
     "@tanstack/react-query": "^5.104.1",
     "@tanstack/react-virtual": "^3.14.14",
     "avsc": "^5.7.9",
+    "googleapis": "^190.0.0",
     "highlight.js": "^11.12.0",
     "next": "16.4.3",
     "nodemailer": "10.2.1",

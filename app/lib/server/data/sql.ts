@@ -148,8 +148,7 @@ type Match = { key: string; size: number };
 
 async function matchFiles(driver: StorageDriver, pattern: string): Promise<Match[]> {
   if (!GLOB.test(pattern)) {
-    const { files } = await driver.inventory(pattern, 1);
-    const hit = files.find((file) => file.key === pattern);
+    const hit = await driver.findFile(pattern);
     return hit ? [{ key: hit.key, size: hit.size }] : [];
   }
   const regex = globToRegExp(pattern);

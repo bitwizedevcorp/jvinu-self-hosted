@@ -4,7 +4,8 @@ import { connection } from "next/server";
 import { FileGlyph } from "../../components/file-glyph";
 import { DownloadIcon, LockIcon } from "../../components/icons";
 import { Wordmark } from "../../components/wordmark";
-import { openLink, overLimit, REFUSALS, type RefusalCode } from "../../lib/server/share-access";
+import { REFUSALS, type RefusalCode } from "../../lib/server/share-access";
+import { viewLink } from "../../lib/server/share-redeem";
 import { describeFile, formatBytes } from "../../lib/storage";
 
 export const metadata: Metadata = {
@@ -35,24 +36,22 @@ export default async function SharedFilePage({ params, searchParams }: PageProps
   await connection(); // per request: the link's state changes as it's used
   const { token } = await params;
   const query = await searchParams;
-  const busy = overLimit("page", token, await headers());
-  const opened = busy ?? (await openLink(token));
+  const opened = await viewLink(token, await headers());
   const problem = isCode(query.e) ? REFUSALS[query.e] : null;
   const wait = typeof query.wait === "string" && /^\d{1,5}$/.test(query.wait) ? Number(query.wait) : 0;
 
   let body: React.ReactNode;
-  if ("code" in opened) {
+  if ("refused" in opened) {
     body = (
       <div className="mt-7 text-center">
-        <h1 className="text-[17px] font-semibold text-ink">{opened.code === "busy" ? "One moment" : "This link doesn't work"}</h1>
+        <h1 className="text-[17px] font-semibold text-ink">{opened.refused.code === "busy" ? "One moment" : "This link doesn't work"}</h1>
         <p role="alert" className="mt-2 text-[14px] leading-relaxed text-ink-muted">
-          {opened.message}
+          {opened.refused.message}
         </p>
       </div>
     );
   } else {
-    const { link, passwordHash } = opened;
-    const protectedLink = Boolean(passwordHash);
+    const { link, protected: protectedLink } = opened;
     const left = link.maxDownloads === null ? null : link.maxDownloads - link.downloads;
     body = (
       <>

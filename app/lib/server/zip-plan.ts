@@ -3,13 +3,14 @@ import { randomBytes } from "node:crypto";
 import { restoreDelay } from "../pricing";
 import type { StoredConnection } from "./connections";
 import { StorageUserError, type Listing, type StorageDriver } from "./drivers/types";
-import { methodFor, type ZipEntry } from "./zip";
+import { methodFor, zipLength, zipStream, type ZipEntry } from "./zip";
 
 /**
- * What goes into a zip download, worked out before a byte is sent: folders expanded, sizes
- * and classes known, limits checked. The plan is kept briefly behind a ticket, so the
- * browser can fetch the archive itself as an ordinary download (with its own progress and
- * cancel button) rather than through a script.
+ * A zip download, from choosing to bytes. `planZip` works out what goes in before a byte is
+ * sent: folders expanded, sizes and classes known, limits checked. The plan is kept briefly
+ * behind a ticket, so the browser can fetch the archive itself as an ordinary download (with
+ * its own progress and cancel button) rather than through a script. `zipDownload` then gives
+ * the archive's bytes and, when it can be known up front, its exact length.
  */
 
 export const ZIP_MAX_FILES = 10_000;
@@ -27,7 +28,7 @@ export type ZipPlan = {
   userId: string;
   /** The archive's file name, ".zip" included. */
   name: string;
-  files: { key: string; path: string; size: number; modified: string | null; storageClass: string | null }[];
+  files: { key: string; path: string; size: number; sizeUnknown?: boolean; modified: string | null; storageClass: string | null }[];
   bytes: number;
   /** Bytes per storage class, for the cost estimate. */
   byClass: { storageClass: string | null; bytes: number }[];
@@ -103,7 +104,14 @@ export async function planZip(input: {
   if (files.size > ZIP_MAX_FILES) throw tooMany();
 
   const planned = [...files.values()]
-    .map((file) => ({ key: file.key, path: cleanPath(file.key.slice(base.length)), size: file.size, modified: file.lastModified, storageClass: file.storageClass }))
+    .map((file) => ({
+      key: file.key,
+      path: cleanPath(file.key.slice(base.length)),
+      size: file.size,
+      ...(file.sizeUnknown ? { sizeUnknown: true } : {}),
+      modified: file.lastModified,
+      storageClass: file.storageClass,
+    }))
     .filter((file) => file.path)
     .sort((a, b) => a.path.localeCompare(b.path));
   const bytes = planned.reduce((sum, file) => sum + file.size, 0);
@@ -127,11 +135,31 @@ export async function planZip(input: {
   };
 }
 
+/**
+ * The archive for a plan: its bytes, each file read from the provider only when its turn comes,
+ * and its exact length — known when nothing is compressed, nothing might be left out (files
+ * in an archive class that may not be restored), and every size is known (a Google
+ * document's isn't until it's exported). Without a promised length, files gone since the
+ * plan, or archived and not restored, are left out and named in a note in the archive. With
+ * one, nothing can be left out: such a file, or one that reads a different size than
+ * planned, fails the download rather than corrupting it.
+ */
+export function zipDownload(plan: ZipPlan, driver: StorageDriver): { stream: ReadableStream<Uint8Array>; length: number | null } {
+  const entries = zipEntries(plan, driver);
+  const length = plan.archived === 0 ? zipLength(entries) : null;
+  const stream = zipStream(entries, {
+    exactSizes: length !== null,
+    skippable: (error) => (error instanceof StorageUserError && (error.status === 404 || error.status === 409) ? error.message : null),
+  });
+  return { stream, length };
+}
+
 /** The archive's entries, each read from the cloud only when its turn comes. */
-export function zipEntries(plan: ZipPlan, driver: StorageDriver): ZipEntry[] {
+function zipEntries(plan: ZipPlan, driver: StorageDriver): ZipEntry[] {
   return plan.files.map((file) => ({
     name: file.path,
     size: file.size,
+    sizeUnknown: file.sizeUnknown,
     modified: file.modified ? new Date(file.modified) : new Date(),
     method: methodFor(file.path),
     open: async () => (await driver.read(file.key)).stream,

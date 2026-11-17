@@ -1,5 +1,5 @@
 import "server-only";
-import { eachLimit, type MetadataChange } from "./drivers/types";
+import { CopyCancelled, eachLimit, isTaken, type MetadataChange } from "./drivers/types";
 import { StorageUserError, type StorageDriver } from "./drivers";
 
 export type OperationItem = { key: string; kind: "file" | "folder" };
@@ -62,10 +62,8 @@ export async function prepareOperation(driver: StorageDriver, operation: Operati
   }
 
   // Never overwrite silently: refuse if anything is already at a destination.
-  for (const { item, to } of pairs) {
-    const { keys } = await driver.listKeys(to, 5);
-    const occupied = item.kind === "folder" ? keys.length > 0 : keys.includes(to);
-    if (occupied) throw new StorageUserError(`Something named “${to.replace(/\/$/, "").split("/").pop()}” is already there.`, 409);
+  for (const { to } of pairs) {
+    if (await isTaken(driver, to)) throw new StorageUserError(`Something named “${to.replace(/\/$/, "").split("/").pop()}” is already there.`, 409);
   }
   return { op: operation.op, pairs };
 }
@@ -99,7 +97,7 @@ export type Progress = { done: number; failed: string[]; total: number };
 
 /**
  * Carries out planned steps, `CONCURRENCY` at a time. Deletes go out in batches of 1,000.
- * `onProgress` is called as work completes; `cancelled` is checked between steps.
+ * `onProgress` is called as work completes; `cancelled` is checked between steps, and inside a folder copy a driver does request by request.
  */
 export async function executeSteps(
   driver: StorageDriver,
@@ -144,15 +142,17 @@ export async function executeSteps(
       if (removeAfter && driver.rename) {
         await driver.rename(step.from, step.to!);
       } else {
-        await driver.copy(step.from, step.to!);
+        // A folder copied request by request (Google Drive) stops inside, not only between steps;
+        // a move stopped that way keeps its source.
+        await driver.copy(step.from, step.to!, { cancelled });
         if (removeAfter) {
           const result = await driver.remove([step.from]);
           if (result.failed.length) throw new Error("delete failed");
         }
       }
       progress.done += 1;
-    } catch {
-      progress.failed.push(step.from);
+    } catch (error) {
+      if (!(error instanceof CopyCancelled)) progress.failed.push(step.from);
     }
     onProgress?.(progress);
   });

@@ -1,12 +1,11 @@
 import { actorOf, recordActivity } from "@/app/lib/server/activity";
-import { managedBlocks } from "@/app/lib/server/bundled-storage";
 import { getConnection } from "@/app/lib/server/connections";
-import { tablesTouched } from "@/app/lib/server/data/lake";
 import { exportSql, type ExportFormat } from "@/app/lib/server/data/sql";
 import { driverFor } from "@/app/lib/server/drivers";
+import { isTaken } from "@/app/lib/server/drivers/types";
 import { guardConnection } from "@/app/lib/server/guard";
+import { admitWrite, refusalResponse } from "@/app/lib/server/write-admission";
 import { fail, handle, readJson, tooLarge } from "@/app/lib/server/http";
-import { forgetInventory } from "@/app/lib/server/inventory";
 
 const FORMATS: ExportFormat[] = ["csv", "parquet", "json"];
 
@@ -38,20 +37,15 @@ export async function POST(request: Request, ctx: RouteContext<"/api/connections
     const targetId = typeof body.targetConnectionId === "string" ? body.targetConnectionId : guarded.connection.id;
     const target = targetId === guarded.connection.id ? guarded.connection : await getConnection(targetId);
     if (!target) return fail("No such connection to save to.", 404);
-    if (target.readOnly) return fail(`“${target.name}” is read-only. Turn that off in its settings to save there.`, 403);
-    if (target.managed) {
-      const blocked = await managedBlocks(target);
-      if (blocked) return fail(blocked, 507);
-    }
     const targetDriver = driverFor(target);
-    const { keys } = await targetDriver.listKeys(key, 1);
-    if (keys.includes(key)) return fail(`Something named “${name}” is already there.`, 409);
-    if (body.acknowledgeTables !== true) {
-      const tables = await tablesTouched(targetDriver, target.id, "upload", [], key.slice(0, key.lastIndexOf("/") + 1));
-      if (tables.length) return Response.json({ error: tables[0].message, code: "lake-table", tables }, { status: 409 });
-    }
+    const refused = await admitWrite({
+      connection: target,
+      kind: "upload",
+      tables: { driver: targetDriver, items: [], destination: key.slice(0, key.lastIndexOf("/") + 1), acknowledged: body.acknowledgeTables === true },
+    });
+    if (refused) return refusalResponse(refused);
+    if (await isTaken(targetDriver, key)) return fail(`Something named “${name}” is already there.`, 409);
     const saved = await exportSql(driverFor(guarded.connection), body.sql, guarded.connection.bucket, format, targetDriver, key);
-    forgetInventory(target.id);
     await recordActivity({
       connectionId: target.id,
       actor: actorOf(guarded.user),

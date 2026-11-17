@@ -621,16 +621,20 @@ export function oneDriveDriver(target: Target): StorageDriver {
 
     // Files, plus each empty folder as its own "marker" — a non-empty folder is implied
     // by what's in it, exactly as on S3.
+    findFile: (key) =>
+      run(async () => {
+        if (!key || key.endsWith("/")) return null;
+        try {
+          const item = await meta(key);
+          return item.file ? { key, size: item.size ?? 0, lastModified: modifiedOf(item), etag: hashOf(item), storageClass: null } : null;
+        } catch (error) {
+          if (isNotFound(error)) return null;
+          throw error;
+        }
+      }),
+
     listKeys: (prefix, max) =>
       run(async () => {
-        if (prefix && !prefix.endsWith("/")) {
-          try {
-            return { keys: (await meta(prefix)).file ? [prefix] : [], truncated: false };
-          } catch (error) {
-            if (isNotFound(error)) return { keys: [], truncated: false };
-            throw error;
-          }
-        }
         const keys: string[] = [];
         let more: boolean;
         try {

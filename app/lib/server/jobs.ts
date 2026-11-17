@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import type { StoredConnection } from "./connections";
 import { db } from "./db";
 import { driverFor, StorageUserError } from "./drivers";
-import { forgetInventory } from "./inventory";
 import { executeSteps, planSteps, type Prepared, type Progress } from "./operations";
 import { forgetNotes, moveNotes } from "./notes";
 import { forgetItems, moveItems } from "./user-items";
@@ -150,7 +149,6 @@ async function run(id: string, connection: StoredConnection, prepared: Prepared)
     });
     if (!(error instanceof StorageUserError)) console.error("[jobs] job failed", id, error);
   } finally {
-    forgetInventory(connection.id);
     cancelled.delete(id);
     live.delete(id);
   }

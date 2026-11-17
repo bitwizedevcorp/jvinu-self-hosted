@@ -1,5 +1,5 @@
 import "server-only";
-import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes } from "node:crypto";
 
 export class ConfigError extends Error {}
 
@@ -15,6 +15,11 @@ export function masterSecret(): string {
 function subKey(purpose: string): Buffer {
   // The salt is part of every derived key: changing it makes every stored credential unreadable.
   return Buffer.from(hkdfSync("sha256", masterSecret(), "jvinu", purpose, 32));
+}
+
+/** An HMAC-SHA256 of `data` under a key of its own for `purpose`, base64url. */
+export function macWith(purpose: string, data: string): string {
+  return createHmac("sha256", subKey(purpose)).update(data).digest("base64url");
 }
 
 /**

@@ -7,6 +7,7 @@ import { atRestEncryption } from "../lib/connection-settings";
 /** New encrypted stores need at least this; the server checks again (and knows about rclone stores). */
 const MIN_PASSPHRASE = 12;
 import { PROVIDER_PRESETS, findPreset, isConnectable, type ConnectableKind } from "../lib/storage";
+import { profileOf } from "../lib/providers";
 import { CheckIcon, ChevronDown, CloseIcon, ExternalIcon, LockIcon, PlusIcon } from "./icons";
 import { WEBSITE_URL } from "../lib/site";
 
@@ -127,6 +128,41 @@ function allowDropboxAccess(values: Record<string, string>): Record<string, stri
   return { codeVerifier: verifier, code: "" };
 }
 
+/** Where Google sends the browser back; the page there shows the code to paste. */
+const DRIVE_CALLBACK_PATH = "/connect/google-drive";
+
+/**
+ * Google's authorization-code flow with PKCE. Google sends the browser back to a page on
+ * this server that shows the code; it's pasted here, and Connect trades it for a refresh
+ * token. The verifier stays in this form, so a code is useless to anyone who only sees it.
+ */
+function signInWithGoogle(values: Record<string, string>): Record<string, string> | string {
+  const clientId = values.clientId?.trim();
+  if (!clientId) return "Enter the client ID first.";
+  // Opened inside the click, before any await: pop-up blockers allow only that.
+  const tab = window.open("", "_blank");
+  if (!tab) return "Your browser blocked the Google tab — allow pop-ups for this site and try again.";
+  tab.opener = null;
+  const verifier = base64url(crypto.getRandomValues(new Uint8Array(48)));
+  void crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)).then((hash) => {
+    const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    url.search = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: window.location.origin + DRIVE_CALLBACK_PATH,
+      response_type: "code",
+      // Read-only asks Google for read-only access too: then Google itself refuses any change.
+      scope: values.readOnly === "true" ? "https://www.googleapis.com/auth/drive.readonly" : "https://www.googleapis.com/auth/drive",
+      // A refresh token, every time: without consent Google only sends one the first time.
+      access_type: "offline",
+      prompt: "consent",
+      code_challenge: base64url(new Uint8Array(hash)),
+      code_challenge_method: "S256",
+    }).toString();
+    tab.location.href = url.href;
+  });
+  return { codeVerifier: verifier, code: "" };
+}
+
 /**
  * Microsoft's device-code flow: the server asks Microsoft for a short code, the user types
  * it at microsoft.com, and Connect redeems it — so no callback URL and no client secret.
@@ -149,6 +185,41 @@ async function signInWithMicrosoft(values: Record<string, string>): Promise<Reco
 }
 
 const SCHEMAS: Record<ConnectableKind, Schema> = {
+  gdrive: {
+    bucketLabel: "Folder",
+    bucketPlaceholder: "/",
+    bucketDefault: "/",
+    bucketHint: "/ for the whole Drive, or a folder such as /Documents.",
+    fields: [
+      {
+        id: "clientId",
+        label: "Client ID",
+        placeholder: "123456789012-abc….apps.googleusercontent.com",
+        mono: true,
+        hint: "In Google Cloud: enable the Google Drive API, then under Credentials create an OAuth client of type Web application, with this server's /connect/google-drive address as an authorised redirect URI.",
+      },
+      { id: "clientSecret", label: "Client secret", kind: "secret" },
+      { id: "codeVerifier", label: "PKCE verifier", kind: "hidden", required: false },
+      {
+        id: "code",
+        label: "Sign-in code",
+        placeholder: "Paste the code shown after you sign in",
+        mono: true,
+        hint: "Approve in the Google tab; it comes back to a page showing a code. Paste it here. Each code works once.",
+        action: { label: "Sign in with Google", run: signInWithGoogle },
+        needs: { field: "codeVerifier", message: "Click “Sign in with Google” first." },
+      },
+    ],
+    security: (
+      <>
+        With Read-only on, jvinu asks Google for read-only access, so Google itself refuses any change; turning it off later means
+        connecting again. The client ID and secret are sealed on this server with a refresh token — never your Google password.
+        Remove access any time at myaccount.google.com → Security → Third-party apps with account access. Files are served
+        through this app rather than as Drive links, and deletes go to the Drive bin. Google Docs, Sheets and Slides open as PDFs.
+      </>
+    ),
+  },
+
   onedrive: {
     bucketLabel: "Folder",
     bucketPlaceholder: "/",
@@ -625,7 +696,7 @@ export function AddProviderDialog({
               Connect a storage provider
             </h2>
             <p className="mt-0.5 text-[13px] text-ink-muted">
-              AWS, Azure, Google, Oracle, Cloudflare R2, Wasabi, Backblaze B2, DigitalOcean, Scaleway, Storj, MinIO, Dropbox or OneDrive.{" "}
+              AWS, Azure, Google, Oracle, Cloudflare R2, Wasabi, Backblaze B2, DigitalOcean, Scaleway, Storj, MinIO, Dropbox, OneDrive or Google Drive.{" "}
               <a href={`${WEBSITE_URL}/guide`} target="_blank" rel="noreferrer" className="font-medium text-accent-strong hover:underline">
                 Which one?
               </a>
@@ -738,7 +809,8 @@ export function AddProviderDialog({
                   <button
                     type="button"
                     onClick={async () => {
-                      const result = await action.run(values);
+                      // The read-only choice decides what some sign-ins ask for (Google Drive).
+                      const result = await action.run({ ...values, readOnly: readOnly ? "true" : "" });
                       if (typeof result === "string") {
                         setErrors((current) => ({ ...current, [field.id]: result }));
                         return;
@@ -821,7 +893,7 @@ export function AddProviderDialog({
               <span>
                 <span className="block text-[13.5px] font-medium text-ink">Encrypt new files at rest</span>
                 <span className="block text-[12.5px] text-ink-muted">
-                  Asks {presetId === "b2" ? "Backblaze (SSE-B2)" : "the service (SSE-S3)"} to encrypt everything jvinu uploads or copies, with
+                  Asks the service ({profileOf(presetId)?.sseName}) to encrypt everything jvinu uploads or copies, with
                   keys it manages. {presetId === "s3" ? "On AWS this is already the default; other S3 services must support SSE-S3." : ""}
                 </span>
               </span>
@@ -961,7 +1033,11 @@ export function AddProviderDialog({
             <input
               type="checkbox"
               checked={readOnly}
-              onChange={(event) => setReadOnly(event.target.checked)}
+              onChange={(event) => {
+                setReadOnly(event.target.checked);
+                // A Google sign-in was for read-only or full access: a changed choice needs a new one.
+                if (presetId === "gdrive" && values.codeVerifier) setValues((current) => ({ ...current, codeVerifier: "", code: "" }));
+              }}
               className="mt-0.5 size-4 cursor-pointer accent-[var(--accent-fill)]"
             />
             <span>

@@ -2,7 +2,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
-import { estimateCost, formatUsd, PRICE_SHEETS, PRICES_AS_OF, type CostEstimate } from "../lib/pricing";
+import { estimateCost, formatUsd, PRICES_AS_OF, sheetFor, type CostEstimate } from "../lib/pricing";
 import { keys } from "../lib/queries";
 import { api, type Analytics, type DiskStatus, type RemoteConnection } from "../lib/remote";
 import { describeFile, formatBytes, type PreviewKind } from "../lib/storage";
@@ -92,8 +92,8 @@ function costSummary(cost: CostEstimate, truncated: boolean, disk?: DiskStatus) 
 
 /** The list download price a rate would override, as the input's placeholder. */
 function egressPlaceholder(connection: RemoteConnection): string {
-  const sheet = PRICE_SHEETS[connection.presetId];
-  if (!sheet || typeof sheet === "string" || (connection.presetId === "s3" && connection.endpoint)) return "0.09";
+  const sheet = sheetFor(connection.presetId, connection.endpoint);
+  if (typeof sheet === "string") return "0.09";
   return String(sheet.egress.perGB);
 }
 

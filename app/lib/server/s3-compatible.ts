@@ -6,7 +6,8 @@ import { cleanEndpoint } from "./http";
  * here from validated parts — never taken from the user — so a saved connection
  * can only ever talk to that provider.
  */
-export type S3CompatibleId = "r2" | "wasabi" | "b2" | "spaces" | "scaleway" | "storj" | "minio";
+import type { S3CompatibleId } from "../providers";
+export type { S3CompatibleId } from "../providers";
 
 type Spec = {
   label: string;

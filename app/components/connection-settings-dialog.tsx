@@ -5,6 +5,7 @@ import { atRestEncryption } from "../lib/connection-settings";
 import { api, type RemoteConnection } from "../lib/remote";
 import { findPreset } from "../lib/storage";
 import { CloseIcon, KeyIcon, LinkIcon, LockIcon, SettingsIcon, ShareIcon } from "./icons";
+import { PROVIDERS } from "../lib/providers";
 
 /**
  * A connection's options that aren't credentials: encryption at rest, the share bucket and
@@ -32,7 +33,7 @@ export function ConnectionSettingsDialog({
   const otherBucket = connections.find((item) => item.id !== connection.id && item.settings.shareTarget);
   const [sharePrefix, setSharePrefix] = useState(shareTarget?.prefix ?? "jvinu-shares/");
   const [publicBase, setPublicBase] = useState(connection.settings.publicBaseUrl ?? "");
-  const place = connection.presetId === "azure" ? "container" : connection.presetId === "dropbox" || connection.presetId === "onedrive" ? "folder" : "bucket";
+  const place = PROVIDERS[connection.presetId].place;
 
   useEffect(() => {
     ref.current?.showModal();
@@ -99,7 +100,7 @@ export function ConnectionSettingsDialog({
                 />
                 <span className="text-[12.5px] leading-relaxed text-ink-muted">
                   <span className="block text-[13.5px] font-medium text-ink">Ask {providerName} to encrypt new files</span>
-                  Uploads and copies made here carry {connection.presetId === "b2" ? "SSE-B2" : "SSE-S3"} (AES-256, keys managed by
+                  Uploads and copies made here carry {PROVIDERS[connection.presetId].sseName} (AES-256, keys managed by
                   the provider). Files already stored keep whatever they have; the inspector shows each file&rsquo;s status.
                 </span>
               </label>

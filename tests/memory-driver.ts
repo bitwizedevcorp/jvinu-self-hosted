@@ -1,6 +1,8 @@
 /**
  * A StorageDriver over an in-memory map of key → bytes, honouring byte ranges like a real
  * provider — and counting what it serves, so tests can prove a preview read only a little.
+ * It keeps the same contract as every real driver, S3-style (keys match by string prefix);
+ * tests/drivers.contract.test.ts holds it to that.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
@@ -13,7 +15,17 @@ export type MemoryDriver = StorageDriver & {
   reset(): void;
 };
 
-export function memoryDriver(initial: Record<string, Uint8Array | string> = {}, options: { ignoreRanges?: boolean } = {}): MemoryDriver {
+const PAGE = 1000;
+const isMarker = (key: string) => key.endsWith("/");
+
+/**
+ * `missing`: the bucket doesn't exist, so verify() says 404.
+ * `ignoreRanges`: serve whole files whatever range was asked for, as some stores do.
+ */
+export function memoryDriver(
+  initial: Record<string, Uint8Array | string> = {},
+  options: { ignoreRanges?: boolean; missing?: boolean } = {},
+): MemoryDriver {
   const files = new Map<string, Uint8Array>();
   for (const [key, value] of Object.entries(initial)) files.set(key, typeof value === "string" ? new TextEncoder().encode(value) : value);
   const counters = { reads: 0, bytesServed: 0, lists: 0 };
@@ -39,35 +51,59 @@ export function memoryDriver(initial: Record<string, Uint8Array | string> = {}, 
       counters.bytesServed = 0;
       counters.lists = 0;
     },
-    verify: async () => ({}),
-    async list(prefix) {
+    verify: async () => {
+      if (options.missing) throw new StorageUserError("That bucket doesn't exist.", 404);
+      return {};
+    },
+    async list(prefix, token) {
       counters.lists++;
+      // One level, folders apart; a folder's own marker is never a file. Paged like S3.
+      const entries: ({ folder: string } | { file: Listing["files"][number] })[] = [];
       const folders = new Set<string>();
-      const out: Listing["files"] = [];
       for (const [key, bytes] of [...files].sort(([a], [b]) => (a < b ? -1 : 1))) {
-        if (!key.startsWith(prefix)) continue;
+        if (!key.startsWith(prefix) || key === prefix) continue;
         const rest = key.slice(prefix.length);
         const slash = rest.indexOf("/");
-        if (slash >= 0) folders.add(prefix + rest.slice(0, slash + 1));
-        else out.push({ key, size: bytes.length, lastModified: modified, etag: null, storageClass: null });
+        if (slash >= 0) {
+          const folder = prefix + rest.slice(0, slash + 1);
+          if (!folders.has(folder)) entries.push({ folder });
+          folders.add(folder);
+        } else entries.push({ file: { key, size: bytes.length, lastModified: modified, etag: null, storageClass: null } });
       }
-      return { folders: [...folders], files: out };
+      const from = token === undefined ? 0 : Number(token);
+      if (!Number.isSafeInteger(from) || from < 0) throw new StorageUserError("Invalid page token.", 400);
+      const page = entries.slice(from, from + PAGE);
+      return {
+        folders: page.flatMap((entry) => ("folder" in entry ? [entry.folder] : [])),
+        files: page.flatMap((entry) => ("file" in entry ? [entry.file] : [])),
+        nextToken: from + PAGE < entries.length ? String(from + PAGE) : undefined,
+      };
+    },
+    async findFile(key) {
+      const bytes = key.endsWith("/") ? undefined : files.get(key);
+      return bytes ? { key, size: bytes.length, lastModified: modified, etag: null, storageClass: null } : null;
     },
     async listKeys(prefix, max) {
       counters.lists++;
       const keys = [...files.keys()].filter((key) => key.startsWith(prefix)).sort();
       return { keys: keys.slice(0, max), truncated: keys.length > max };
     },
-    async stats() {
-      return { objects: 0, bytes: 0, lastModified: null, truncated: false };
+    async stats(prefix) {
+      const inside = [...files].filter(([key]) => key.startsWith(prefix) && !isMarker(key));
+      return {
+        objects: inside.length,
+        bytes: inside.reduce((sum, [, bytes]) => sum + bytes.length, 0),
+        lastModified: inside.length ? modified : null,
+        truncated: false,
+      };
     },
-    async inventory(prefix) {
+    async inventory(prefix, maxPages = 100) {
       counters.lists++;
       const out = [...files]
-        .filter(([key]) => key.startsWith(prefix))
+        .filter(([key]) => key.startsWith(prefix) && !isMarker(key))
         .sort(([a], [b]) => (a < b ? -1 : 1))
         .map(([key, bytes]) => ({ key, size: bytes.length, lastModified: modified, etag: null, storageClass: null }));
-      return { files: out, truncated: false };
+      return { files: out.slice(0, maxPages * PAGE), truncated: out.length > maxPages * PAGE };
     },
     signedUrl: async () => null,
     async read(key: string, range?: ByteRange) {
@@ -103,7 +139,11 @@ export function memoryDriver(initial: Record<string, Uint8Array | string> = {}, 
       return { failed: [] };
     },
     async copy(source, destination) {
-      files.set(destination, files.get(source)!);
+      const bytes = files.get(source);
+      if (!bytes) throw new StorageUserError("That object no longer exists.", 404);
+      files.set(destination, bytes);
+      const type = types.get(source);
+      if (type) types.set(destination, type);
     },
   };
   return driver;

@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useRef } from "react";
-import { downloadCost, formatUsd } from "../lib/pricing";
+import { downloadCost, formatUsd, PRICE_SHEETS } from "../lib/pricing";
 import { api, type OperationItem, type RemoteConnection } from "../lib/remote";
 import { formatBytes } from "../lib/storage";
 import { ArchiveIcon, CloseIcon, DownloadIcon } from "./icons";
@@ -18,7 +18,7 @@ function costOf(connection: RemoteConnection, byClass: { storageClass: string | 
     else if (cost.kind === "plan") return "No per-download fee: this service bills by plan";
     else if (cost.kind === "unknown") return "No download estimate for this connection";
   }
-  return usd > 0 ? `About ${formatUsd(usd)} to download` : connection.presetId === "garage" ? "Free to download — it's on your own server" : "Free to download";
+  return usd > 0 ? `About ${formatUsd(usd)} to download` : PRICE_SHEETS[connection.presetId] === "self-hosted" ? "Free to download — it's on your own server" : "Free to download";
 }
 
 /**
