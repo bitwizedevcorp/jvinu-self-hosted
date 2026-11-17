@@ -21,6 +21,8 @@ const google = createGoogleDriveMock({ pageSize: 2 });
 const add = google.add;
 
 const driver = (root = "/") => googleDriveDriver({ root, ...MOCK_DRIVE });
+/** A request that copies one Drive file. */
+const isCopy = (request: string) => /^POST \/drive\/v3\/files\/[^/]+\/copy$/.test(request);
 const text = async (stream: ReadableStream<Uint8Array>) => Buffer.from(await new Response(stream).arrayBuffer()).toString();
 
 beforeAll(() => google.install());
@@ -229,7 +231,7 @@ describe("Google Drive driver", () => {
     for (let i = 0; i < 10; i++) add(`file-${i}.txt`, big.id, "text/plain", `file ${i}`);
     const inner = add("Inner", big.id, FOLDER);
     for (let i = 0; i < 5; i++) add(`inner-${i}.txt`, inner.id, "text/plain", `inner ${i}`);
-    const copies = () => google.seen.filter((request) => /^POST \/drive\/v3\/files\/[^/]+\/copy$/.test(request)).length;
+    const copies = () => google.seen.filter(isCopy).length;
 
     const work = driver("/Work");
     const steps = await planSteps(work, await prepareOperation(work, { op: "copy", items: [{ key: "Big/", kind: "folder" }], destination: "Sub/" }));
@@ -246,21 +248,21 @@ describe("Google Drive driver", () => {
     // go on to copy the rest of the folder.
     const big = add("Big", google.files.get("id1")!.id, FOLDER);
     for (let i = 0; i < 12; i++) add(`file-${i}.txt`, big.id, "text/plain", `file ${i}`);
-    const copies = () => google.seen.filter((request) => /^POST \/drive\/v3\/files\/[^/]+\/copy$/.test(request)).length;
+    const copies = () => google.seen.filter(isCopy).length;
 
     // One page holds the whole folder, so several copies run at once. The first answers at once;
     // the rest are still on their way when it's cancelled.
     google.setPageSize(100);
-    google.setLatency((request) => (/\/copy$/.test(request) && copies() > 1 ? 30 : 0));
+    google.setLatency((request) => (isCopy(request) && copies() > 1 ? 30 : 0));
     const work = driver("/Work");
     // Cancelled once four copies are on their way: three are still waiting on Google.
     let cancelled = false;
-    let tripped = false;
-    const check = () => {
-      if (!tripped && copies() >= 4) tripped = cancelled = true;
+    let cancelledOnce = false;
+    const cancelOnceFourCopiesStarted = () => {
+      if (!cancelledOnce && copies() >= 4) cancelledOnce = cancelled = true;
       return cancelled;
     };
-    const copying = work.copy("Big/", "Sub/Big/", { cancelled: check });
+    const copying = work.copy("Big/", "Sub/Big/", { cancelled: cancelOnceFourCopiesStarted });
     await expect(copying).rejects.toMatchObject({ message: "The copy was cancelled." });
     const atReturn = copies();
     cancelled = false; // the job has ended and cleared its flag

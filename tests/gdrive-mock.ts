@@ -192,10 +192,10 @@ export function createGoogleDriveMock({ pageSize: initialPageSize = 2 }: { pageS
       pageSize = size;
     },
     /** How long each request ("METHOD /path") takes from now on, in ms. */
-    setLatency(of: (request: string) => number) {
-      latency = of;
+    setLatency(delayOf: (request: string) => number) {
+      latency = delayOf;
     },
-    /** Empties the drive. */
+    /** Empties the drive and puts the page size and request delays back as they started. */
     clear() {
       latency = () => 0;
       pageSize = initialPageSize;
