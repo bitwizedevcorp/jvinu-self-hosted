@@ -26,6 +26,8 @@ export function createGoogleDriveMock({ pageSize: initialPageSize = 2 }: { pageS
   const seen: string[] = [];
   let seq = 0;
   let realFetch: typeof fetch | null = null;
+  /** How long each request takes, in ms: none by default. */
+  let latency: (request: string) => number = () => 0;
 
   function add(name: string, parent: string, mimeType: string, bytes?: string | Buffer): MockFile {
     const file: MockFile = {
@@ -70,6 +72,8 @@ export function createGoogleDriveMock({ pageSize: initialPageSize = 2 }: { pageS
     const method = (init.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
     seen.push(`${method} ${url.pathname}`);
+    const wait = latency(`${method} ${url.pathname}`);
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
     const body = async () => {
       const raw = init.body ?? (input instanceof Request ? await input.text() : undefined);
       if (raw === undefined || raw === null) return Buffer.alloc(0);
@@ -187,8 +191,14 @@ export function createGoogleDriveMock({ pageSize: initialPageSize = 2 }: { pageS
     setPageSize(size: number) {
       pageSize = size;
     },
+    /** How long each request ("METHOD /path") takes from now on, in ms. */
+    setLatency(of: (request: string) => number) {
+      latency = of;
+    },
     /** Empties the drive. */
     clear() {
+      latency = () => 0;
+      pageSize = initialPageSize;
       files.clear();
       uploads.clear();
       seen.length = 0;
@@ -199,9 +209,14 @@ export function createGoogleDriveMock({ pageSize: initialPageSize = 2 }: { pageS
       if (realFetch) return;
       const original = globalThis.fetch;
       realFetch = original;
-      globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
         const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-        return /^https:\/\/[a-z0-9.-]*googleapis\.com\//.test(href) ? answer(input, init) : original(input, init);
+        if (!/^https:\/\/[a-z0-9.-]*googleapis\.com\//.test(href)) return original(input, init);
+        const response = await answer(input, init);
+        // As fetch itself does: with redirect "error", any redirect status (a resumable upload's
+        // 308 included, Location or not) is a network error before the caller sees the response.
+        if (init?.redirect === "error" && [301, 302, 303, 307, 308].includes(response.status)) throw new TypeError("fetch failed");
+        return response;
       }) as typeof fetch;
     },
     uninstall() {

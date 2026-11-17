@@ -241,13 +241,25 @@ export class CopyCancelled extends StorageUserError {
   }
 }
 
-/** Runs `work` over items with at most `limit` in flight. */
+/**
+ * Runs `work` over items with at most `limit` in flight. Once one fails, no new item starts,
+ * and the first failure is thrown only after every item in flight has settled: when this
+ * returns or throws, nothing it started is still running (a cancelled copy stays stopped).
+ */
 export async function eachLimit<T>(items: T[], limit: number, work: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
+  let failure: { error: unknown } | null = null;
   const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) await work(items[next++]);
+    while (!failure && next < items.length) {
+      try {
+        await work(items[next++]);
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
   });
   await Promise.all(runners);
+  if (failure) throw (failure as { error: unknown }).error;
 }
 
 export const NETWORK_CODES = ["ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "ECONNRESET", "EAI_AGAIN", "REQUEST_SEND_ERROR"];

@@ -303,12 +303,15 @@ export function googleDriveDriver(target: Target): StorageDriver {
         headers.set("authorization", `Bearer ${token}`);
       }
       // A redirect to another origin drops the Authorization header (fetch does that itself).
-      const response = await fetch(url, { ...init, headers, redirect: authorised ? "follow" : "error" }).catch((error) => {
+      // An upload session's address is its credential, so its requests follow no redirect —
+      // "manual", not "error": fetch would turn the 308 that acknowledges a chunk into an error.
+      const response = await fetch(url, { ...init, headers, redirect: authorised ? "follow" : "manual" }).catch((error) => {
         if (networkCode(error)) throw unreachable(undefined, "Google Drive");
         throw error;
       });
-      // 308 is how a resumable upload says "got that chunk, send the next".
-      if (response.ok || response.status === 308) return response;
+      // 308 without a Location is how a resumable upload says "got that chunk, send the next";
+      // any other redirect status is refused below like an error.
+      if (response.ok || (response.status === 308 && !response.headers.has("location"))) return response;
       const text = await response.text().catch(() => "");
       let reason = "";
       try {

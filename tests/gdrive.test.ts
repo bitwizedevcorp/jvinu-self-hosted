@@ -241,6 +241,44 @@ describe("Google Drive driver", () => {
     expect(progress).toEqual({ done: 0, failed: [], total: 1 });
   });
 
+  it("has every copy request settled by the time a cancelled copy returns", async () => {
+    // The job forgets its cancellation once it ends: a request still in flight then must not
+    // go on to copy the rest of the folder.
+    const big = add("Big", google.files.get("id1")!.id, FOLDER);
+    for (let i = 0; i < 12; i++) add(`file-${i}.txt`, big.id, "text/plain", `file ${i}`);
+    const copies = () => google.seen.filter((request) => /^POST \/drive\/v3\/files\/[^/]+\/copy$/.test(request)).length;
+
+    // One page holds the whole folder, so several copies run at once. The first answers at once;
+    // the rest are still on their way when it's cancelled.
+    google.setPageSize(100);
+    google.setLatency((request) => (/\/copy$/.test(request) && copies() > 1 ? 30 : 0));
+    const work = driver("/Work");
+    // Cancelled once four copies are on their way: three are still waiting on Google.
+    let cancelled = false;
+    let tripped = false;
+    const check = () => {
+      if (!tripped && copies() >= 4) tripped = cancelled = true;
+      return cancelled;
+    };
+    const copying = work.copy("Big/", "Sub/Big/", { cancelled: check });
+    await expect(copying).rejects.toMatchObject({ message: "The copy was cancelled." });
+    const atReturn = copies();
+    cancelled = false; // the job has ended and cleared its flag
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(copies()).toBe(atReturn);
+    expect(atReturn).toBeLessThan(12);
+  });
+
+  it("uploads a file larger than one upload chunk", async () => {
+    const work = driver("/Work");
+    const size = 8 * 1024 * 1024 + 1234;
+    const bytes = new Uint8Array(size).map((_, i) => i % 251);
+    await work.upload("big.bin", new Response(bytes).body!, size, "application/octet-stream");
+    const read = Buffer.from(await new Response((await work.read("big.bin")).stream).arrayBuffer());
+    expect(read.length).toBe(size);
+    expect(read.equals(Buffer.from(bytes))).toBe(true);
+  });
+
   it("reads the access Google granted, not the access that was asked for", () => {
     expect(driveAccessOf(`openid ${GDRIVE_SCOPE}`)).toBe("full");
     expect(driveAccessOf(GDRIVE_READONLY_SCOPE)).toBe("read");
