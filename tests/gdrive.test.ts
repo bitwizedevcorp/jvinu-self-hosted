@@ -9,6 +9,7 @@ import {
   GDRIVE_SCOPE,
   googleDriveDriver,
 } from "@/app/lib/server/drivers/gdrive";
+import { executeSteps, planSteps, prepareOperation } from "@/app/lib/server/operations";
 import { createGoogleDriveMock, DOC, FOLDER, MOCK_DRIVE } from "./gdrive-mock";
 
 /**
@@ -220,6 +221,24 @@ describe("Google Drive driver", () => {
     const { failed } = await work.remove(["moved.txt", "already-gone.txt"]);
     expect(failed).toEqual([]);
     await expect(work.read("moved.txt")).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("stops copying a folder's tree once its job is cancelled", async () => {
+    // A whole folder is one job step on Drive, so cancelling has to reach inside the copy.
+    const big = add("Big", google.files.get("id1")!.id, FOLDER);
+    for (let i = 0; i < 10; i++) add(`file-${i}.txt`, big.id, "text/plain", `file ${i}`);
+    const inner = add("Inner", big.id, FOLDER);
+    for (let i = 0; i < 5; i++) add(`inner-${i}.txt`, inner.id, "text/plain", `inner ${i}`);
+    const copies = () => google.seen.filter((request) => /^POST \/drive\/v3\/files\/[^/]+\/copy$/.test(request)).length;
+
+    const work = driver("/Work");
+    const steps = await planSteps(work, await prepareOperation(work, { op: "copy", items: [{ key: "Big/", kind: "folder" }], destination: "Sub/" }));
+    expect(steps).toEqual([{ from: "Big/", to: "Sub/Big/" }]);
+    const progress = await executeSteps(work, "copy", steps, { cancelled: () => copies() > 0 });
+
+    expect(copies()).toBeLessThan(15);
+    // Stopped by the person, not failed: the job reports itself cancelled.
+    expect(progress).toEqual({ done: 0, failed: [], total: 1 });
   });
 
   it("reads the access Google granted, not the access that was asked for", () => {

@@ -1,5 +1,5 @@
 import "server-only";
-import { eachLimit, isTaken, type MetadataChange } from "./drivers/types";
+import { CopyCancelled, eachLimit, isTaken, type MetadataChange } from "./drivers/types";
 import { StorageUserError, type StorageDriver } from "./drivers";
 
 export type OperationItem = { key: string; kind: "file" | "folder" };
@@ -142,15 +142,17 @@ export async function executeSteps(
       if (removeAfter && driver.rename) {
         await driver.rename(step.from, step.to!);
       } else {
-        await driver.copy(step.from, step.to!);
+        // A folder copied request by request (Google Drive) stops inside, not only between steps;
+        // a move stopped that way keeps its source.
+        await driver.copy(step.from, step.to!, { cancelled });
         if (removeAfter) {
           const result = await driver.remove([step.from]);
           if (result.failed.length) throw new Error("delete failed");
         }
       }
       progress.done += 1;
-    } catch {
-      progress.failed.push(step.from);
+    } catch (error) {
+      if (!(error instanceof CopyCancelled)) progress.failed.push(step.from);
     }
     onProgress?.(progress);
   });

@@ -177,7 +177,7 @@ export function cryptDriver(inner: StorageDriver, key: Uint8Array): StorageDrive
     },
 
     // Ciphertext copies as it is: the nonce travels in the file's own header.
-    copy: (source, destination) => inner.copy(stored(source), stored(destination)),
+    copy: (source, destination, options) => inner.copy(stored(source), stored(destination), options),
 
     // Headers describe ciphertext here, so only the class and tags are worth changing.
     metadataSupport: inner.metadataSupport

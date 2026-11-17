@@ -207,7 +207,11 @@ export interface StorageDriver {
   /** Deletes keys; returns the ones that couldn't be deleted. A key that's already gone isn't a failure. */
   remove(keys: string[]): Promise<{ failed: string[] }>;
   /** Server-side where the provider supports it. 404 if the source is missing. */
-  copy(source: string, destination: string): Promise<void>;
+  /**
+   * A driver that copies a folder request by request (Google Drive) checks `cancelled` between
+   * requests and, once it's true, stops with `CopyCancelled`: part of the tree may be copied.
+   */
+  copy(source: string, destination: string, options?: { cancelled?: () => boolean }): Promise<void>;
   /** One object's metadata, including how it's encrypted at rest. */
   head?(key: string): Promise<ObjectHead>;
   /** Changes headers, storage class or tags in place (a self-copy where the cloud needs one). */
@@ -228,6 +232,13 @@ export interface StorageDriver {
    * keeps that's derived from the files' contents (thumbnails) is sealed with it too.
    */
   cacheCipher?: { seal(data: Uint8Array): Uint8Array; open(data: Uint8Array): Uint8Array };
+}
+
+/** A copy stopped part-way because its job was cancelled: not a failure. */
+export class CopyCancelled extends StorageUserError {
+  constructor() {
+    super("The copy was cancelled.", 409);
+  }
 }
 
 /** Runs `work` over items with at most `limit` in flight. */

@@ -3,6 +3,7 @@ import { createHash, randomInt } from "node:crypto";
 import { auth as googleAuth, drive as driveApi, type drive_v3 } from "googleapis/build/src/apis/drive";
 import { mimeOf } from "../mime";
 import {
+  CopyCancelled,
   eachLimit,
   networkCode,
   parseContentRange,
@@ -592,12 +593,20 @@ export function googleDriveDriver(target: Target): StorageDriver {
     return { parentId, name };
   }
 
-  /** Drive can't copy a folder: make the new one, then copy what's inside, level by level. */
-  async function copyTree(sourceId: string, parentId: string, name: string) {
+  /**
+   * Drive can't copy a folder: make the new one, then copy what's inside, level by level —
+   * checking before every request whether the job was cancelled, since the tree is one step.
+   */
+  async function copyTree(sourceId: string, parentId: string, name: string, cancelled?: () => boolean) {
+    const go = () => {
+      if (cancelled?.()) throw new CopyCancelled();
+    };
+    go();
     const made = await call(() => drive.files.create({ requestBody: { name, mimeType: FOLDER, parents: [parentId] }, fields: "id" }));
     const targetId = made.id!;
     let token: string | undefined;
     do {
+      go();
       const data = await call(() =>
         drive.files.list({
           q: `${driveQuote(sourceId)} in parents and trashed = false`,
@@ -609,7 +618,8 @@ export function googleDriveDriver(target: Target): StorageDriver {
       );
       const children = (data.files ?? []) as Node[];
       await eachLimit(children, 4, async (child) => {
-        if (child.mimeType === FOLDER) return copyTree(child.id, targetId, child.name);
+        if (child.mimeType === FOLDER) return copyTree(child.id, targetId, child.name, cancelled);
+        go();
         await call(() => drive.files.copy({ fileId: child.id, requestBody: { name: child.name, parents: [targetId] }, fields: "id" }));
       });
       token = data.nextPageToken ?? undefined;
@@ -800,12 +810,12 @@ export function googleDriveDriver(target: Target): StorageDriver {
         return { failed };
       }),
 
-    copy: (source, to) =>
+    copy: (source, to, options) =>
       run(async () => {
         const found = await entryAt(source);
         if (!found) throw new StorageUserError("That file or folder no longer exists.", 404);
         const { parentId, name } = await destination(to, found);
-        if (found.node.mimeType === FOLDER) return copyTree(found.node.id, parentId, name);
+        if (found.node.mimeType === FOLDER) return copyTree(found.node.id, parentId, name, options?.cancelled);
         await call(() => drive.files.copy({ fileId: found.node.id, requestBody: { name, parents: [parentId] }, fields: "id" }));
       }),
 
